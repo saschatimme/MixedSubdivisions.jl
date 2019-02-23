@@ -90,7 +90,7 @@ end
 function CayleyIndexing(configuration_sizes::Vector{Int})
     ncolumns = sum(configuration_sizes)
     nconfigurations = length(configuration_sizes)
-    offsets = cumsum([1; mᵢs[1:end-1]]) .- 1
+    offsets = cumsum([1; configuration_sizes[1:end-1]]) .- 1
     CayleyIndexing(configuration_sizes, ncolumns, nconfigurations, offsets)
 end
 
@@ -126,7 +126,7 @@ Base.@propagate_inbounds Base.getindex(CI::CayleyIndexing, i, j) = CI.offsets[i]
 
 # iteration protocol
 Base.length(C::CayleyIndexing) = C.ncolumns
-Base.eltype(C::TypeCayleyIndexing}) = NTuple{3, Int}
+Base.eltype(C::Type{CayleyIndexing}) = NTuple{3, Int}
 function Base.iterate(CI::CayleyIndexing)
     i = j = 1
     @inbounds offset = CI.offsets[i]
@@ -279,7 +279,7 @@ function inequality_dot(cell::MixedCell, ineq::CayleyIndex, τ)
         aᵢ, bᵢ = cell.indices[i]
         c₁ = cell.circuit_table[ineq.cayley_index, i]
         c₂ = begin
-            if i == circuit.config_index
+            if i == ineq.config_index
                 cell.volume - cell.circuit_table[ineq.cayley_index, i]
             else
                 -c₁
@@ -297,14 +297,14 @@ end
 Compute the first violated inequality in the given mixed cell with respect to the given
 term ordering and the target weight vector `τ`.
 """
-function first_violated_inequality(mixed_cell::MixedCell{I}, τ::Vector, ord::TermOrdering) where {I}
+function first_violated_inequality(mixed_cell::MixedCell{In}, τ::Vector, ord::TermOrdering) where {In}
     empty = true
     best_index = first(mixed_cell.indexing)
-    best_dot = zero(I)
+    best_dot = zero(In)
 
     for I in mixed_cell.indexing
         is_valid_inquality(mixed_cell, I) || continue
-        dot_I = circuit_dot(mixed_cell, I, τ)
+        dot_I = inequality_dot(mixed_cell, I, τ)
         if dot_I < 0
             # TODO: Can we avoid this check sometimes?
             if empty || circuit_less(cell, I, dot_I, best_index, best_dot)
@@ -414,8 +414,8 @@ end
 function MixedSubdivision(configurations::Vector{<:Matrix}, cell_indices::Vector{Vector{NTuple{2,Int}}})
     C = cayley(configurations)
     indexing = CayleyIndexing(size.(configurations, 2))
-    mixed_cells = map(cell -> MixedCell(C, indexing, cell), cell_indices)
-    MixedSubdivision(mixed_cells, C, indexing)
+    mixed_cells = map(cell -> MixedCell(cell, C, indexing), cell_indices)
+    MixedSubdivision(mixed_cells, C)
 end
 
 
