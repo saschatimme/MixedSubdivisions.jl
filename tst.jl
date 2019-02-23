@@ -30,7 +30,7 @@ subdivison.mixed_cells[1]
 
 
 
-indexing = THC.ConfigurationIndexing([4, 3])
+indexing = THC.ConfigurationIndexer([4, 3])
 for (i, j, offset) in indexing
       @show i, j, offset
 end
