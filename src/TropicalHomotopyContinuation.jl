@@ -4,7 +4,6 @@ export MixedCell, MixedSubdivision, TermOrdering, cayley
 
 import LinearAlgebra
 
-
 """
     cayley(Aᵢ...)
 
@@ -93,6 +92,11 @@ function CayleyIndexing(configuration_sizes::Vector{Int})
     offsets = cumsum([1; configuration_sizes[1:end-1]]) .- 1
     CayleyIndexing(configuration_sizes, ncolumns, nconfigurations, offsets)
 end
+CayleyIndexing(config_sizes) = CayleyIndexing(collect(config_sizes))
+
+function Base.copy(CI::CayleyIndexing)
+    CayleyIndexing(CI.configuration_sizes, CI.ncolumns, CI.nconfigurations, CI.offsets)
+end
 
 """
     offsets(cayley_indexing)
@@ -151,7 +155,7 @@ end
 
 
 """
-struct MixedCell{I<:Integer}
+mutable struct MixedCell{I<:Integer}
     # A mixed cell is defined by two vectors our of each configuration.
     # We assume that each point is in ℤⁿ and the i-th configuration has mᵢ points.
     # Therefore, the Cayley configuration has ∑ mᵢ =: m columns and 2n rows.
@@ -186,6 +190,16 @@ end
 function MixedCell(indices, cayley::Matrix, indexing::CayleyIndexing)
     table, volume = circuit_table(indices, cayley, indexing)
     MixedCell(indices, table, volume, indexing)
+end
+
+function Base.copy(M::MixedCell)
+    MixedCell(copy(M.indices), copy(M.circuit_table), copy(M.volume), copy(M.indexing))
+end
+
+function Base.:(==)(M₁::MixedCell, M₂::MixedCell)
+    M₁.volume == M₂.volume &&
+    M₁.indices == M₂.indices &&
+    M₁.circuit_table == M₂.circuit_table
 end
 
 function circuit_table(mixed_cell_indices, cayley::Matrix{I}, indexing::CayleyIndexing) where {I}
@@ -236,6 +250,28 @@ Base.@propagate_inbounds function is_valid_inquality(M::MixedCell, I::CayleyInde
 end
 
 """
+    circuit_first(cell::MixedCell, ineq::CayleyIndex, configuration::Int)
+
+Return the first entry of the circuit corresponding to the given configuration.
+"""
+Base.@propagate_inbounds function circuit_first(cell::MixedCell, ineq::CayleyIndex, i)
+    cell.circuit_table[ineq.cayley_index, i]
+end
+
+"""
+    circuit_second(cell::MixedCell, ineq::CayleyIndex, configuration::Int)
+
+Return the second entry of the circuit corresponding to the given configuration.
+"""
+Base.@propagate_inbounds function circuit_second(cell::MixedCell, ineq::CayleyIndex, i)
+    if i == ineq.config_index
+        cell.volume - cell.circuit_table[ineq.cayley_index, i]
+    else
+        -cell.circuit_table[ineq.cayley_index, i]
+    end
+end
+
+"""
     inequality_coordinate(cell::MixedCell, ineq::CayleyIndex, coord::CayleyIndex)
     inequality_coordinate(cell::MixedCell, ineq::CayleyIndex, i, j)
 
@@ -246,22 +282,16 @@ function inequality_coordinate(cell::MixedCell, ineq::CayleyIndex, coord::Cayley
 end
 function inequality_coordinate(cell::MixedCell, ineq::CayleyIndex, i::Int, j::Int)
     aᵢ, bᵢ = cell.indices[i]
-    if i == ineq.config_index
-        if j == ineq.col_index
-            return -cell.volume
-        elseif j == aᵢ
-            return cell.circuit_table[ineq.cayley_index, i]
-        elseif j == bᵢ
-            return cell.volume - cell.circuit_table[ineq.cayley_index, i]
-        end
+
+    if i == ineq.config_index && j == ineq.col_index
+        -cell.volume
+    elseif j == aᵢ
+        circuit_first(cell, ineq, i)
+    elseif j == bᵢ
+        circuit_second(cell, ineq, i)
     else
-        if j == aᵢ
-            return cell.circuit_table[ineq.cayley_index, i]
-        elseif j == bᵢ
-            return -cell.circuit_table[ineq.cayley_index, i]
-        end
+        zero(cell.volume)
     end
-    zero(cell.volume)
 end
 
 function inequality_coordinates(cell::MixedCell, ineq1, ineq2, coord...)
@@ -277,14 +307,8 @@ function inequality_dot(cell::MixedCell, ineq::CayleyIndex, τ)
     out = -cell.volume * τ[ineq.cayley_index]
     for i in 1:length(cell.indices)
         aᵢ, bᵢ = cell.indices[i]
-        c₁ = cell.circuit_table[ineq.cayley_index, i]
-        c₂ = begin
-            if i == ineq.config_index
-                cell.volume - cell.circuit_table[ineq.cayley_index, i]
-            else
-                -c₁
-            end
-        end
+        c₁ = circuit_first(cell, ineq, i)
+        c₂ = circuit_second(cell, ineq, i)
         out += c₁ * τ[cell.indexing[i, aᵢ]]
         out += c₂ * τ[cell.indexing[i, bᵢ]]
     end
@@ -379,8 +403,25 @@ function swapsort4(a, b, c, d)
     return a, b, c, d
 end
 
+@enum CellUpdateCase begin
+    cell_update_first
+    cell_update_second
+    cell_update_first_and_second
+end
 
-function mixed_cell_split(cell::MixedCell, index::CayleyIndex)
+"""
+    CellUpdate(cell::MixedCell, violated_ineq::CayleyIndex)
+
+Compute the updates to the given mixed cell for the first violated inequality.
+This doesn't update anything yet but gives a plan what needs to be changed.
+This follows the reverse search rule outlined in section 6.2.
+"""
+struct CellUpdate
+    case::CellUpdateCase
+    index::CayleyIndex
+end
+
+function CellUpdate(cell::MixedCell, index::CayleyIndex)
     i = index.config_index
     aᵢ, bᵢ = cell.indices[i]
     γᵢ = index.col_index
@@ -389,17 +430,95 @@ function mixed_cell_split(cell::MixedCell, index::CayleyIndex)
     c_bᵢ = inequality_coordinate(cell, index, index.config_index, bᵢ)
 
     if c_aᵢ > 0 && c_bᵢ > 0
-        (bᵢ, γᵢ), (aᵢ, γᵢ)
+        CellUpdate(cell_update_first_and_second, index)
     elseif c_aᵢ > 0 && c_bᵢ == 0
-        (bᵢ, γᵢ)
+        CellUpdate(cell_update_first, index)
     elseif c_aᵢ > 0 && c_bᵢ < 0 && bᵢ < γᵢ
-        (bᵢ, γᵢ)
+        CellUpdate(cell_update_first, index)
     elseif c_aᵢ == 0 && c_bᵢ > 0
-        (aᵢ, γᵢ)
+        CellUpdate(cell_update_second, index)
     else # only remaining case:  c_aᵢ < 0 && c_bᵢ > 0 && aᵢ < γᵢ
-        (aᵢ, γᵢ)
+        CellUpdate(cell_update_second, index)
     end
 
+end
+
+@enum Exchange begin
+    exchange_first
+    exchange_second
+end
+
+"""
+    exchange_column!(cell::MixedCell, exchange::Exchange, ineq::CayleyIndex)
+
+Exchange either the first or second column (depending on `exchange`) in the
+configuration defined by `ineq` with the column defined in `ineq`.
+"""
+function exchange_column!(cell::MixedCell, exchange::Exchange, ineq::CayleyIndex)
+    i = ineq.config_index
+    new_volume = circuit(cell, exchange, ineq, i)
+
+    rotated_in_ineq = cell.circuit_table[ineq.cayley_index, :] # c_4
+    if exchange == exchange_first
+        rotated_in_ineq[i] -= cell.volume
+    end
+
+    rotated_column = [circuit(cell, exchange, r, ineq.config_index) for r in cell.indexing]
+
+    for k in 1:ncolumns(cell.indexing)
+        cell.circuit_table[k, :] .= div.(new_volume .* cell.circuit_table[k, :] .- rotated_column[k] .* rotated_in_ineq, cell.volume)
+    end
+
+    #  he violated ineq is now an ineq at the old index
+    if exchange == exchange_first
+        rotated_out = CayleyIndex(i, cell.indices[i][1], ineq.offset)
+    else
+        rotated_out = CayleyIndex(i, cell.indices[i][2], ineq.offset)
+    end
+
+    cell.circuit_table[rotated_out.cayley_index, :] = -rotated_in_ineq
+    if exchange == exchange_first
+        cell.circuit_table[rotated_out.cayley_index, i] += new_volume
+    end
+
+    cell.volume = new_volume
+    cell.indices[i] = begin
+        if exchange == exchange_first
+            (ineq.col_index, cell.indices[i][2])
+        else # exchange == exchange_second
+            (cell.indices[i][1], ineq.col_index)
+        end
+    end
+
+    # clear table for ineqs corresponding to mixed cell columns
+    for j in 1:nconfigurations(cell.indexing)
+        aⱼ, bⱼ = cell.indices[j]
+        off = offset(cell.indexing, j)
+        cell.circuit_table[aⱼ + off, :] .= zero(eltype(cell.circuit_table))
+        cell.circuit_table[bⱼ + off, :] .= zero(eltype(cell.circuit_table))
+    end
+
+    cell
+end
+function exchange_column(cell::MixedCell, exchange::Exchange, ineq::CayleyIndex)
+    exchange_column!(copy(cell), exchange, ineq)
+end
+
+function Base.reverse(ineq::CayleyIndex, cell::MixedCell, exchange::Exchange)
+    if exchange == exchange_first
+        j = cell.indices[ineq.config_index][1]
+    else # exchange == exchange_second
+        j = cell.indices[ineq.config_index][2]
+    end
+    ind = CayleyIndex(ineq.config_index, j, ineq.offset)
+end
+
+Base.@propagate_inbounds function circuit(cell::MixedCell, exchange::Exchange, ineq::CayleyIndex, i)
+    if exchange == exchange_first
+        circuit_first(cell, ineq, i)
+    else # exchange == exchange_second
+        circuit_second(cell, ineq, i)
+    end
 end
 
 
