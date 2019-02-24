@@ -465,11 +465,11 @@ function exchange_column!(cell::MixedCell, exchange::Exchange, ineq::CayleyIndex
 
     rotated_column = [circuit(cell, exchange, r, ineq.config_index) for r in cell.indexing]
 
-    for k in 1:ncolumns(cell.indexing)
-        cell.circuit_table[k, :] .= div.(new_volume .* cell.circuit_table[k, :] .- rotated_column[k] .* rotated_in_ineq, cell.volume)
+    for i in 1:nconfigurations(cell.indexing), k in 1:ncolumns(cell.indexing)
+        cell.circuit_table[k, i] = div(new_volume * cell.circuit_table[k, i] - rotated_column[k] * rotated_in_ineq[i], cell.volume)
     end
 
-    #  he violated ineq is now an ineq at the old index
+    #  the violated ineq is now an ineq at the old index
     if exchange == exchange_first
         rotated_out = CayleyIndex(i, cell.indices[i][1], ineq.offset)
     else
