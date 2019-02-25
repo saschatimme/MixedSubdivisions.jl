@@ -519,14 +519,15 @@ function cell_updates(cell::MixedCell, index::CayleyIndex)
         update_first_and_second
     elseif c_aᵢ > 0 && c_bᵢ == 0
         update_first
-    elseif c_aᵢ > 0 && c_bᵢ < 0 && bᵢ < γᵢ
-        update_first
     elseif c_aᵢ == 0 && c_bᵢ > 0
         update_second
-    else # only remaining case:  c_aᵢ < 0 && c_bᵢ > 0 && aᵢ < γᵢ
+    elseif c_aᵢ > 0 && c_bᵢ < 0 && bᵢ < γᵢ
+        update_first
+    elseif c_aᵢ < 0 && c_bᵢ > 0 && aᵢ < γᵢ
         update_second
+    else
+        nothing
     end
-
 end
 
 struct SearchTreeVertex
@@ -571,14 +572,16 @@ end
 
 function add_vertex!(search_tree, cell, ineq)
     updates = cell_updates(cell, ineq)
+
     if updates == update_first_and_second
         push!(search_tree, SearchTreeVertex(cell, ineq, exchange_first, updates))
     elseif updates == update_first
         push!(search_tree, SearchTreeVertex(cell, ineq, exchange_first, updates))
-    else # updates == cell_update_second
+    elseif updates == update_second
         push!(search_tree, SearchTreeVertex(cell, ineq, exchange_second, updates))
     end
-    nothing
+
+    updates
 end
 
 
@@ -627,7 +630,9 @@ function traverse(f::F, traverser::MixedCellTraverser) where {F<:Function}
                 f(cell)
                 search_tree[end] = back(search_tree[end])
             else
-                add_vertex!(search_tree, cell, ineq)
+                if add_vertex!(search_tree, cell, ineq) === nothing
+                    search_tree[end] = back(search_tree[end])
+                end
             end
         end
     end
