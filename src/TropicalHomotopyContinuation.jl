@@ -1,6 +1,6 @@
 module TropicalHomotopyContinuation
 
-export MixedCell, MixedSubdivision, TermOrdering, cayley
+export MixedCell, MixedSubdivision, TermOrdering, cayley, MixedCellTraverser, mixed_volume
 
 import LinearAlgebra
 
@@ -71,6 +71,10 @@ struct CayleyIndex
     cayley_index::Int
 end
 CayleyIndex(i, j, offset) = CayleyIndex(i, j, offset, offset + j)
+
+function Base.show(io::IO, CI::CayleyIndex)
+    print(io, "(", CI.config_index, ",", CI.col_index, ")::", CI.cayley_index)
+end
 
 """
     CayleyIndexing
@@ -331,7 +335,7 @@ function first_violated_inequality(mixed_cell::MixedCell{In}, τ::Vector, ord::T
         dot_I = inequality_dot(mixed_cell, I, τ)
         if dot_I < 0
             # TODO: Can we avoid this check sometimes?
-            if empty || circuit_less(cell, I, dot_I, best_index, best_dot)
+            if empty || circuit_less(mixed_cell, I, dot_I, best_index, best_dot, ord)
                 empty = false
                 best_index = I
                 best_dot = dot_I
@@ -339,12 +343,15 @@ function first_violated_inequality(mixed_cell::MixedCell{In}, τ::Vector, ord::T
         end
     end
 
+    if empty == true
+        return nothing
+    end
     return best_index
 end
 
 function circuit_less(cell::MixedCell, ind₁::CayleyIndex, λ₁, ind₂::CayleyIndex, λ₂, ord::DotOrdering)
-    a = λ₁ * circuit_dot(cell, ind₁, ord.w)
-    b = λ₂ * circuit_dot(cell, ind₂, ord.w)
+    a = λ₁ * inequality_dot(cell, ind₁, ord.w)
+    b = λ₂ * inequality_dot(cell, ind₂, ord.w)
     a == b ? circuit_less(cell, ind₁, λ₁, ind₂, λ₂, ord.tiebraker) : a < b
 end
 
@@ -355,7 +362,7 @@ function circuit_less(cell::MixedCell, ind₁::CayleyIndex, λ₁, ind₂::Cayle
                 swapsort4(aᵢ, bᵢ, ind₁.col_index, ind₂.col_index), 4
             elseif ind₁.config_index == i
                 swapsort4(aᵢ, bᵢ, ind₁.col_index), 3
-            elseif d.config_index == i
+            elseif ind₂.config_index == i
                 swapsort4(aᵢ, bᵢ, ind₂.col_index), 3
             else
                 swapsort4(aᵢ, bᵢ), 2
@@ -403,45 +410,6 @@ function swapsort4(a, b, c, d)
     return a, b, c, d
 end
 
-@enum CellUpdateCase begin
-    cell_update_first
-    cell_update_second
-    cell_update_first_and_second
-end
-
-"""
-    CellUpdate(cell::MixedCell, violated_ineq::CayleyIndex)
-
-Compute the updates to the given mixed cell for the first violated inequality.
-This doesn't update anything yet but gives a plan what needs to be changed.
-This follows the reverse search rule outlined in section 6.2.
-"""
-struct CellUpdate
-    case::CellUpdateCase
-    index::CayleyIndex
-end
-
-function CellUpdate(cell::MixedCell, index::CayleyIndex)
-    i = index.config_index
-    aᵢ, bᵢ = cell.indices[i]
-    γᵢ = index.col_index
-
-    c_aᵢ = inequality_coordinate(cell, index, index.config_index, aᵢ)
-    c_bᵢ = inequality_coordinate(cell, index, index.config_index, bᵢ)
-
-    if c_aᵢ > 0 && c_bᵢ > 0
-        CellUpdate(cell_update_first_and_second, index)
-    elseif c_aᵢ > 0 && c_bᵢ == 0
-        CellUpdate(cell_update_first, index)
-    elseif c_aᵢ > 0 && c_bᵢ < 0 && bᵢ < γᵢ
-        CellUpdate(cell_update_first, index)
-    elseif c_aᵢ == 0 && c_bᵢ > 0
-        CellUpdate(cell_update_second, index)
-    else # only remaining case:  c_aᵢ < 0 && c_bᵢ > 0 && aᵢ < γᵢ
-        CellUpdate(cell_update_second, index)
-    end
-
-end
 
 @enum Exchange begin
     exchange_first
@@ -466,7 +434,7 @@ function exchange_column!(cell::MixedCell, exchange::Exchange, ineq::CayleyIndex
     rotated_column = [circuit(cell, exchange, r, ineq.config_index) for r in cell.indexing]
 
     for i in 1:nconfigurations(cell.indexing), k in 1:ncolumns(cell.indexing)
-        cell.circuit_table[k, i] = div(new_volume * cell.circuit_table[k, i] - rotated_column[k] * rotated_in_ineq[i], cell.volume)
+        cell.circuit_table[k, i] = div(new_volume * cell.circuit_table[k, i] - rotated_column[k] * rotated_in_ineq[i], sign(new_volume) * cell.volume)
     end
 
     #  the violated ineq is now an ineq at the old index
@@ -476,12 +444,12 @@ function exchange_column!(cell::MixedCell, exchange::Exchange, ineq::CayleyIndex
         rotated_out = CayleyIndex(i, cell.indices[i][2], ineq.offset)
     end
 
-    cell.circuit_table[rotated_out.cayley_index, :] = -rotated_in_ineq
+    cell.circuit_table[rotated_out.cayley_index, :] = -rotated_in_ineq * sign(new_volume)
     if exchange == exchange_first
         cell.circuit_table[rotated_out.cayley_index, i] += new_volume
     end
 
-    cell.volume = new_volume
+    cell.volume = abs(new_volume)
     cell.indices[i] = begin
         if exchange == exchange_first
             (ineq.col_index, cell.indices[i][2])
@@ -520,6 +488,219 @@ Base.@propagate_inbounds function circuit(cell::MixedCell, exchange::Exchange, i
         circuit_second(cell, ineq, i)
     end
 end
+
+#######################
+# Mixed Cell Traverser
+#######################
+
+@enum CellUpdates begin
+    update_first
+    update_second
+    update_first_and_second
+end
+
+"""
+    cell_updates(cell::MixedCell, violated_ineq::CayleyIndex)
+
+Compute the updates to the given mixed cell for the first violated inequality.
+This doesn't update anything yet but gives a plan what needs to be changed.
+This follows the reverse search rule outlined in section 6.2.
+"""
+function cell_updates(cell::MixedCell, index::CayleyIndex)
+    i = index.config_index
+    aᵢ, bᵢ = cell.indices[i]
+    γᵢ = index.col_index
+
+    c_aᵢ = inequality_coordinate(cell, index, index.config_index, aᵢ)
+    c_bᵢ = inequality_coordinate(cell, index, index.config_index, bᵢ)
+    # SOMETHING IS WRONG HERE!
+    # IS there an assumption (aᵢ < bᵢ)??
+    if c_aᵢ > 0 && c_bᵢ > 0
+        update_first_and_second
+    elseif c_aᵢ > 0 && c_bᵢ == 0
+        update_first
+    elseif c_aᵢ > 0 && c_bᵢ < 0 && bᵢ < γᵢ
+        update_first
+    elseif c_aᵢ == 0 && c_bᵢ > 0
+        update_second
+    else # only remaining case:  c_aᵢ < 0 && c_bᵢ > 0 && aᵢ < γᵢ
+        update_second
+    end
+
+end
+
+struct SearchTreeVertex
+    index::CayleyIndex
+    reverse_index::CayleyIndex
+    exchange::Exchange
+    update::CellUpdates
+    back::Bool
+end
+
+function SearchTreeVertex(cell::MixedCell, index::CayleyIndex, exchange::Exchange, update, back=false)
+    reverse_index = reverse(index, cell, exchange)
+    SearchTreeVertex(index, reverse_index, exchange, update, back)
+end
+
+function Base.show(io::IO, v::SearchTreeVertex)
+    print(io, "SearchTreeVertex(index=$(v.index), reverse_index=$(v.reverse_index), $(v.exchange), $(v.update), back=$(v.back))")
+end
+
+function back(v::SearchTreeVertex)
+    SearchTreeVertex(v.index, v.reverse_index, v.exchange, v.update, true)
+end
+
+function exchange_column!(cell::MixedCell, v::SearchTreeVertex)
+    exchange_column!(cell, v.exchange, v.index)
+end
+
+function reverse_exchange_column!(cell::MixedCell, v::SearchTreeVertex)
+    exchange_column!(cell, v.exchange, v.reverse_index)
+end
+
+struct MixedCellTraverser{I, Ord<:TermOrdering}
+    mixed_cell::MixedCell{I}
+    target::Vector{I}
+    ord::Ord
+    search_tree::Vector{SearchTreeVertex}
+end
+
+function MixedCellTraverser(mixed_cell::MixedCell, target, ord)
+    MixedCellTraverser(mixed_cell, target, ord, SearchTreeVertex[])
+end
+
+function add_vertex!(search_tree, cell, ineq)
+    updates = cell_updates(cell, ineq)
+    if updates == update_first_and_second
+        push!(search_tree, SearchTreeVertex(cell, ineq, exchange_first, updates))
+    elseif updates == update_first
+        push!(search_tree, SearchTreeVertex(cell, ineq, exchange_first, updates))
+    else # updates == cell_update_second
+        push!(search_tree, SearchTreeVertex(cell, ineq, exchange_second, updates))
+    end
+    nothing
+end
+
+
+function traverse(f::F, traverser::MixedCellTraverser) where {F<:Function}
+    cell, search_tree, τ, ord = traverser.mixed_cell, traverser.search_tree, traverser.target, traverser.ord
+    ineq = first_violated_inequality(cell, τ, ord)
+    # Handle case that we have nothing to do
+    if ineq === nothing
+        # leaf, cb
+        f(cell)
+        return
+    else
+        add_vertex!(search_tree, cell, ineq)
+    end
+
+    while !isempty(search_tree)
+        # println("====")
+        # check = MixedCell(cell.indices, cayley, cell.indexing)
+        # if cell != check
+        #     printstyled("Divergence!\n", color=:red)
+        #     printstyled(cell.indices, "\n", color=:red)
+        #     return cell, check
+        #     error()
+        # end
+        v = search_tree[end]
+        if v.back
+            # printstyled(search_tree[end], "\n", color=:yellow)
+            reverse_exchange_column!(cell, pop!(search_tree))
+
+            if v.update == update_first_and_second &&
+               v.exchange == exchange_first
+               push!(search_tree, SearchTreeVertex(cell, v.index, exchange_second, v.update))
+           elseif !isempty(search_tree)
+               search_tree[end] = back(search_tree[end])
+           end
+        else
+            # @show cell.indices
+            exchange_column!(cell, v)
+            # printstyled(v, "\n", color=:green)
+
+            ineq = first_violated_inequality(cell, τ, ord)
+            # @show ineq
+            if ineq === nothing
+                # leaf, cb
+                @show cell.indices cell.volume
+                f(cell)
+                search_tree[end] = back(search_tree[end])
+            else
+                add_vertex!(search_tree, cell, ineq)
+            end
+        end
+    end
+    nothing
+end
+
+
+
+total_degree_homotopy(f::Function, Aᵢ...) = total_degree_homotopy(f, Aᵢ)
+
+function degree(A::Matrix)
+    d = zero(eltype(A))
+    for j in 1:size(A,2)
+        c = A[1, j]
+        for i in 2:size(A,1)
+            c += A[i,j]
+        end
+        d = max(d, c)
+    end
+    d
+end
+
+
+function total_degree_homotopy(f::Function, As)
+    mixed_cell, τ = total_degree_homotopy_start(As)
+    traverser = MixedCellTraverser(mixed_cell, τ, LexicographicOrdering())
+    n = nconfigurations(mixed_cell.indexing)
+    traverse(traverser) do cell
+        # ignore all cells where one of the artifical columns is part
+        for (aᵢ, bᵢ) in cell.indices
+            (aᵢ ≤ n + 1 || bᵢ ≤ n + 1) && return nothing
+        end
+
+
+        f(cell)
+        nothing
+    end
+end
+
+function total_degree_homotopy_start(As)
+    # construct padded cayley matrix
+    A = cayley(map(As) do Aᵢ
+        dᵢ = degree(Aᵢ)
+        [zeros(eltype(Aᵢ), size(Aᵢ, 1)) dᵢ * LinearAlgebra.I Aᵢ]
+    end)
+
+    # τ is the vector with an entry of each column in A having entries
+    # indexed by one of the additiobal columns equal to -1 and 0 otherwise
+    τ = zeros(eltype(A), size(A, 2))
+    n = div(size(A, 1), 2)
+    j = 1
+    for Aᵢ in As
+        τ[j:j+n] .= -one(eltype(A))
+        j += n + size(Aᵢ, 2) + 1
+    end
+
+    # We start with only one mixed cell
+    cell_indices = [(1, i) for i in 2:n+1]
+    indexing = CayleyIndexing(size.(As, 2) .+ (n + 1))
+    mixed_cell = MixedCell(cell_indices, A, indexing)
+
+    mixed_cell, τ
+end
+
+mixed_volume(Aᵢ...) = mixed_volume(Aᵢ)
+function mixed_volume(As)
+    mv = Ref(0)
+    total_degree_homotopy(As) do cell
+        mv[] += cell.volume
+    end
+    mv[]
+end
+
 
 
 """
