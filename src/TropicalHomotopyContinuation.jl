@@ -47,7 +47,7 @@ struct DotOrdering{T<:Number,Ord<:TermOrdering} <: TermOrdering
     w::Vector{T}
     tiebraker::Ord
 end
-DotOrdering(w::Vector) = DotOrdering(w, LexicographicOrdering())
+DotOrdering(w::Vector; tiebraker=LexicographicOrdering()) = DotOrdering(w, tiebraker)
 
 
 #######################
@@ -302,6 +302,10 @@ function inequality_coordinates(cell::MixedCell, ineq1, ineq2, coord...)
     inequality_coordinate(cell, ineq1, coord...), inequality_coordinate(cell, ineq2, coord...)
 end
 
+function inequality(cell::MixedCell, ineq::CayleyIndex)
+    [inequality_coordinate(cell, ineq, coord.config_index, coord.col_index) for coord in cell.indexing]
+end
+
 """
     inequality_dot(cell::MixedCell, ineq::CayleyIndex, τ)
 
@@ -335,7 +339,7 @@ function first_violated_inequality(mixed_cell::MixedCell{In}, τ::Vector, ord::T
         dot_I = inequality_dot(mixed_cell, I, τ)
         if dot_I < 0
             # TODO: Can we avoid this check sometimes?
-            if empty || circuit_less(mixed_cell, I, dot_I, best_index, best_dot, ord)
+            if empty || circuit_less(mixed_cell, best_index, dot_I, I, best_dot, ord)
                 empty = false
                 best_index = I
                 best_dot = dot_I
@@ -343,12 +347,16 @@ function first_violated_inequality(mixed_cell::MixedCell{In}, τ::Vector, ord::T
         end
     end
 
-    if empty == true
-        return nothing
-    end
+    empty && return nothing
+
     return best_index
 end
 
+"""
+    circuit_less(cell::MixedCell, ind₁::CayleyIndex, λ₁, ind₂::CayleyIndex, λ₂, ord::DotOrdering)
+
+Decicdes whether `λ₁c[ind₁] ≺ λ₂c[ind₂]` where ≺ is the ordering given by `ord`.
+"""
 function circuit_less(cell::MixedCell, ind₁::CayleyIndex, λ₁, ind₂::CayleyIndex, λ₂, ord::DotOrdering)
     a = λ₁ * inequality_dot(cell, ind₁, ord.w)
     b = λ₂ * inequality_dot(cell, ind₂, ord.w)
@@ -372,6 +380,7 @@ function circuit_less(cell::MixedCell, ind₁::CayleyIndex, λ₁, ind₂::Cayle
             j = sorted[k]
             c₁, c₂ = inequality_coordinates(cell, ind₁, ind₂, i, j)
             λc₁, λc₂ = λ₁ * c₁, λ₂ * c₂
+
             if λc₁ < λc₂
                 return true
             elseif λc₁ > λc₂
@@ -381,7 +390,6 @@ function circuit_less(cell::MixedCell, ind₁::CayleyIndex, λ₁, ind₂::Cayle
     end
     return false
 end
-
 
 """
     swapsort4(a, b)
@@ -426,7 +434,7 @@ function exchange_column!(cell::MixedCell, exchange::Exchange, ineq::CayleyIndex
     i = ineq.config_index
     new_volume = circuit(cell, exchange, ineq, i)
 
-    rotated_in_ineq = cell.circuit_table[ineq.cayley_index, :] # c_4
+    rotated_in_ineq = cell.circuit_table[ineq.cayley_index, :]
     if exchange == exchange_first
         rotated_in_ineq[i] -= cell.volume
     end
@@ -513,8 +521,8 @@ function cell_updates(cell::MixedCell, index::CayleyIndex)
 
     c_aᵢ = inequality_coordinate(cell, index, index.config_index, aᵢ)
     c_bᵢ = inequality_coordinate(cell, index, index.config_index, bᵢ)
-    # SOMETHING IS WRONG HERE!
-    # IS there an assumption (aᵢ < bᵢ)??
+    c_γᵢ = inequality_coordinate(cell, index, index.config_index, γᵢ)
+
     if c_aᵢ > 0 && c_bᵢ > 0
         update_first_and_second
     elseif c_aᵢ > 0 && c_bᵢ == 0
@@ -559,7 +567,7 @@ function reverse_exchange_column!(cell::MixedCell, v::SearchTreeVertex)
     exchange_column!(cell, v.exchange, v.reverse_index)
 end
 
-struct MixedCellTraverser{I, Ord<:TermOrdering}
+mutable struct MixedCellTraverser{I, Ord<:TermOrdering}
     mixed_cell::MixedCell{I}
     target::Vector{I}
     ord::Ord
@@ -573,6 +581,8 @@ end
 function add_vertex!(search_tree, cell, ineq)
     updates = cell_updates(cell, ineq)
 
+    updates === nothing && return false
+
     if updates == update_first_and_second
         push!(search_tree, SearchTreeVertex(cell, ineq, exchange_first, updates))
     elseif updates == update_first
@@ -581,34 +591,25 @@ function add_vertex!(search_tree, cell, ineq)
         push!(search_tree, SearchTreeVertex(cell, ineq, exchange_second, updates))
     end
 
-    updates
+    true
 end
 
 
 function traverse(f::F, traverser::MixedCellTraverser) where {F<:Function}
-    cell, search_tree, τ, ord = traverser.mixed_cell, traverser.search_tree, traverser.target, traverser.ord
+    cell, search_tree = traverser.mixed_cell, traverser.search_tree
+    τ, ord = traverser.target, traverser.ord
     ineq = first_violated_inequality(cell, τ, ord)
     # Handle case that we have nothing to do
     if ineq === nothing
-        # leaf, cb
         f(cell)
-        return
+        return nothing
     else
         add_vertex!(search_tree, cell, ineq)
     end
 
     while !isempty(search_tree)
-        # println("====")
-        # check = MixedCell(cell.indices, cayley, cell.indexing)
-        # if cell != check
-        #     printstyled("Divergence!\n", color=:red)
-        #     printstyled(cell.indices, "\n", color=:red)
-        #     return cell, check
-        #     error()
-        # end
         v = search_tree[end]
         if v.back
-            # printstyled(search_tree[end], "\n", color=:yellow)
             reverse_exchange_column!(cell, pop!(search_tree))
 
             if v.update == update_first_and_second &&
@@ -618,19 +619,15 @@ function traverse(f::F, traverser::MixedCellTraverser) where {F<:Function}
                search_tree[end] = back(search_tree[end])
            end
         else
-            # @show cell.indices
             exchange_column!(cell, v)
-            # printstyled(v, "\n", color=:green)
 
             ineq = first_violated_inequality(cell, τ, ord)
-            # @show ineq
             if ineq === nothing
-                # leaf, cb
-                @show cell.indices cell.volume
                 f(cell)
                 search_tree[end] = back(search_tree[end])
             else
-                if add_vertex!(search_tree, cell, ineq) === nothing
+                vertex_added = add_vertex!(search_tree, cell, ineq)
+                if !vertex_added
                     search_tree[end] = back(search_tree[end])
                 end
             end
@@ -638,7 +635,6 @@ function traverse(f::F, traverser::MixedCellTraverser) where {F<:Function}
     end
     nothing
 end
-
 
 
 total_degree_homotopy(f::Function, Aᵢ...) = total_degree_homotopy(f, Aᵢ)
@@ -658,39 +654,67 @@ end
 
 function total_degree_homotopy(f::Function, As)
     mixed_cell, τ = total_degree_homotopy_start(As)
+
     traverser = MixedCellTraverser(mixed_cell, τ, LexicographicOrdering())
     n = nconfigurations(mixed_cell.indexing)
     traverse(traverser) do cell
         # ignore all cells where one of the artifical columns is part
         for (aᵢ, bᵢ) in cell.indices
-            (aᵢ ≤ n + 1 || bᵢ ≤ n + 1) && return nothing
+            if (aᵢ ≤ n + 1 || bᵢ ≤ n + 1)
+                return nothing
+            end
         end
 
-
-        f(cell)
+        # We need to substract (n+1,n+1) from each each pair
+        shift_indices!(cell.indices)
+        f(cell.volume, cell.indices)
+        unshift_indices!(cell.indices)
         nothing
     end
 end
 
+function shift_indices!(indices)
+    n = length(indices)
+    for i in 1:n
+        aᵢ, bᵢ = indices[i]
+        indices[i] = (aᵢ - (n + 1), bᵢ - (n + 1))
+    end
+    indices
+end
+function unshift_indices!(indices)
+    n = length(indices)
+    for i in 1:n
+        aᵢ, bᵢ = indices[i]
+        indices[i] = (aᵢ + n + 1, bᵢ + n + 1)
+    end
+    indices
+end
+
+
 function total_degree_homotopy_start(As)
+    n = size(As[1], 1)
+    L = [zeros(eltype(As[1]), n) LinearAlgebra.I]
     # construct padded cayley matrix
     A = cayley(map(As) do Aᵢ
-        dᵢ = degree(Aᵢ)
-        [zeros(eltype(Aᵢ), size(Aᵢ, 1)) dᵢ * LinearAlgebra.I Aᵢ]
+        [degree(Aᵢ)*L Aᵢ]
     end)
 
     # τ is the vector with an entry of each column in A having entries
     # indexed by one of the additiobal columns equal to -1 and 0 otherwise
     τ = zeros(eltype(A), size(A, 2))
-    n = div(size(A, 1), 2)
     j = 1
-    for Aᵢ in As
+    for (i, Aᵢ) in enumerate(As)
         τ[j:j+n] .= -one(eltype(A))
         j += n + size(Aᵢ, 2) + 1
     end
 
     # We start with only one mixed cell
-    cell_indices = [(1, i) for i in 2:n+1]
+    # In the paper it's stated to use [(i, i+1) for i in 1:n]
+    # But this seems to be wrong.
+    # Instead if I use the same starting mixed cell as for the regeneration homotopy,
+    # [(i, i+1) for i in 1:n]
+    # things seem to work.
+    cell_indices = [(i, i+1) for i in 1:n]
     indexing = CayleyIndexing(size.(As, 2) .+ (n + 1))
     mixed_cell = MixedCell(cell_indices, A, indexing)
 
@@ -700,28 +724,28 @@ end
 mixed_volume(Aᵢ...) = mixed_volume(Aᵢ)
 function mixed_volume(As)
     mv = Ref(0)
-    total_degree_homotopy(As) do cell
-        mv[] += cell.volume
+    total_degree_homotopy(As) do volume, indices
+        mv[] += volume
     end
     mv[]
 end
 
 
-
-"""
-    MixedSubdivision(configurations::Vector{<:Matrix}, cell_indices::Vector{Vector{NTuple{2,Int}}})
-"""
-struct MixedSubdivision{I<:Integer}
-    mixed_cells::Vector{MixedCell{I}}
-    cayley::Matrix{I}
-end
-
-function MixedSubdivision(configurations::Vector{<:Matrix}, cell_indices::Vector{Vector{NTuple{2,Int}}})
-    C = cayley(configurations)
-    indexing = CayleyIndexing(size.(configurations, 2))
-    mixed_cells = map(cell -> MixedCell(cell, C, indexing), cell_indices)
-    MixedSubdivision(mixed_cells, C)
-end
+#
+# """
+#     MixedSubdivision(configurations::Vector{<:Matrix}, cell_indices::Vector{Vector{NTuple{2,Int}}})
+# """
+# struct MixedSubdivision{I<:Integer}
+#     mixed_cells::Vector{MixedCell{I}}
+#     cayley::Matrix{I}
+# end
+#
+# function MixedSubdivision(configurations::Vector{<:Matrix}, cell_indices::Vector{Vector{NTuple{2,Int}}})
+#     C = cayley(configurations)
+#     indexing = CayleyIndexing(size.(configurations, 2))
+#     mixed_cells = map(cell -> MixedCell(cell, C, indexing), cell_indices)
+#     MixedSubdivision(mixed_cells, C)
+# end
 
 
 end # module
