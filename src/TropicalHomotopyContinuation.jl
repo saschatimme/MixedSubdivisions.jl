@@ -595,7 +595,7 @@ function add_vertex!(search_tree, cell, ineq)
 end
 
 
-function traverse(f::F, traverser::MixedCellTraverser) where {F<:Function}
+function traverse(f, traverser::MixedCellTraverser)
     cell, search_tree = traverser.mixed_cell, traverser.search_tree
     τ, ord = traverser.target, traverser.ord
     ineq = first_violated_inequality(cell, τ, ord)
@@ -637,7 +637,7 @@ function traverse(f::F, traverser::MixedCellTraverser) where {F<:Function}
 end
 
 
-total_degree_homotopy(f::Function, Aᵢ...) = total_degree_homotopy(f, Aᵢ)
+total_degree_homotopy(f, Aᵢ...) = total_degree_homotopy(f, Aᵢ)
 
 function degree(A::Matrix)
     d = zero(eltype(A))
@@ -652,25 +652,29 @@ function degree(A::Matrix)
 end
 
 
-function total_degree_homotopy(f::Function, As)
-    mixed_cell, τ = total_degree_homotopy_start(As)
-
-    traverser = MixedCellTraverser(mixed_cell, τ, LexicographicOrdering())
-    n = nconfigurations(mixed_cell.indexing)
-    traverse(traverser) do cell
-        # ignore all cells where one of the artifical columns is part
-        for (aᵢ, bᵢ) in cell.indices
-            if (aᵢ ≤ n + 1 || bᵢ ≤ n + 1)
-                return nothing
-            end
+struct TotalDegreeCallback{F}
+    f::F
+end
+function (cb::TotalDegreeCallback)(cell::MixedCell)
+    n = length(cell.indices)
+    # ignore all cells where one of the artifical columns is part
+    for (aᵢ, bᵢ) in cell.indices
+        if (aᵢ ≤ n + 1 || bᵢ ≤ n + 1)
+            return nothing
         end
-
-        # We need to substract (n+1,n+1) from each each pair
-        shift_indices!(cell.indices)
-        f(cell.volume, cell.indices)
-        unshift_indices!(cell.indices)
-        nothing
     end
+
+    # We need to substract (n+1,n+1) from each each pair
+    shift_indices!(cell.indices)
+    cb.f(cell.volume, cell.indices)
+    unshift_indices!(cell.indices)
+    nothing
+end
+
+function total_degree_homotopy(f, As)
+    mixed_cell, τ = total_degree_homotopy_start(As)
+    traverser = MixedCellTraverser(mixed_cell, τ, LexicographicOrdering())
+    traverse(TotalDegreeCallback(f), traverser)
 end
 
 function shift_indices!(indices)
@@ -721,13 +725,19 @@ function total_degree_homotopy_start(As)
     mixed_cell, τ
 end
 
+mutable struct MixedVolumeCounter{T}
+    volume::T
+end
+MixedVolumeCounter() = MixedVolumeCounter(0)
+function (MVC::MixedVolumeCounter)(vol, indices)
+    MVC.volume += vol
+end
+
 mixed_volume(Aᵢ...) = mixed_volume(Aᵢ)
 function mixed_volume(As)
-    mv = Ref(0)
-    total_degree_homotopy(As) do volume, indices
-        mv[] += volume
-    end
-    mv[]
+    mv = MixedVolumeCounter()
+    total_degree_homotopy(mv, As)
+    mv.volume
 end
 
 
