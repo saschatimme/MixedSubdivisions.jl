@@ -457,23 +457,23 @@ end
 
 function circuit_less(cell::MixedCell, ind₁::CayleyIndex, λ₁, ind₂::CayleyIndex, λ₂, ord::LexicographicOrdering)
     @inbounds for i in 1:length(cell.indices)
-    aᵢ, bᵢ = cell.indices[i]
-    # Optimize for the common case
-    if i ≠ ind₁.config_index && i ≠ ind₂.config_index
-    c₁_aᵢ = cell.circuit_table[ind₁.cayley_index, i]
-    c₂_aᵢ = cell.circuit_table[ind₂.cayley_index, i]
-    λc₁, λc₂ = λ₁ * c₁_aᵢ, λ₂ * c₂_aᵢ
-    if λc₁ ≠ λc₂
-    # we have c₁_aᵢ=-c₁_bᵢ and c₂_aᵢ =-c₂_bᵢ
-    if aᵢ < bᵢ
-    return λc₁ < λc₂
-    else
-    return λc₁ > λc₂
-    end
-    else
-    continue
-    end
-    end
+        aᵢ, bᵢ = cell.indices[i]
+        # Optimize for the common case
+        if i ≠ ind₁.config_index && i ≠ ind₂.config_index
+            c₁_aᵢ = cell.circuit_table[ind₁.cayley_index, i]
+            c₂_aᵢ = cell.circuit_table[ind₂.cayley_index, i]
+            λc₁, λc₂ = λ₁ * c₁_aᵢ, λ₂ * c₂_aᵢ
+            if λc₁ ≠ λc₂
+                # we have c₁_aᵢ=-c₁_bᵢ and c₂_aᵢ =-c₂_bᵢ
+                if aᵢ < bᵢ
+                    return λc₁ < λc₂
+                else
+                    return λc₁ > λc₂
+                end
+            else
+                continue
+            end
+        end
 
         sorted, n = begin
             if ind₁.config_index == ind₂.config_index == i
@@ -550,31 +550,31 @@ function exchange_column!(cell::MixedCell, exchange::Exchange, ineq::CayleyIndex
     d = circuit(cell, exchange, ineq, i)
     # Read out the inequality associated to the colum we want to rotate in
     for k in 1:n
-    rotated_in_ineq[k] = flipsign(cell.circuit_table[ineq.cayley_index, k], d)
+        rotated_in_ineq[k] = flipsign(cell.circuit_table[ineq.cayley_index, k], d)
     end
     if exchange == exchange_first
         rotated_in_ineq[i] -= flipsign(cell.volume, d)
     end
 
     if exchange == exchange_first
-    # equivalent to
-    #  for ind in cell.indexing
-    #    rotated_column[ind.cayley_index] = -circuit_first(ind, i)
-    #  end
-    for k in 1:m
-    rotated_column[k] = -cell.circuit_table[k, i]
-    end
+        # equivalent to
+        #  for ind in cell.indexing
+        #    rotated_column[ind.cayley_index] = -circuit_first(ind, i)
+        #  end
+        for k in 1:m
+            rotated_column[k] = -cell.circuit_table[k, i]
+        end
     else # exchange == exchange_second
-    # equivalent to
-    #  for ind in cell.indexing
-    #    rotated_column[ind.cayley_index] = -circuit_second(ind, i)
-    #  end
-    for k in 1:m
-    rotated_column[k] = cell.circuit_table[k, i]
-    end
-    for k in configuration(cell.indexing, i)
-    rotated_column[k] -= cell.volume
-    end
+        # equivalent to
+        #  for ind in cell.indexing
+        #    rotated_column[ind.cayley_index] = -circuit_second(ind, i)
+        #  end
+        for k in 1:m
+            rotated_column[k] = cell.circuit_table[k, i]
+        end
+        for k in configuration(cell.indexing, i)
+            rotated_column[k] -= cell.volume
+        end
     end
 
     vol⁻¹ = MuliplicativeInverse(flipsign(cell.volume, d))
@@ -610,10 +610,10 @@ function exchange_column!(cell::MixedCell, exchange::Exchange, ineq::CayleyIndex
     for j in 1:n
         aⱼ, bⱼ = cell.indices[j]
         off = offset(cell.indexing, j)
-    for k in 1:n
+        for k in 1:n
             table[aⱼ + off, k] = zero(eltype(table))
         	table[bⱼ + off, k] = zero(eltype(table))
-    end
+        end
     end
     end
 
