@@ -4,6 +4,50 @@ export MixedCell, MixedSubdivision, TermOrdering, cayley, MixedCellTraverser, mi
 
 import LinearAlgebra
 
+
+"""
+	MuliplicativeInverse(a::Signed)
+
+Computes a multiplicative inverse of a signed integer `a`.
+Currently the only supported function `div`.
+"""
+struct MuliplicativeInverse{T<:Signed}
+    p::T
+    k::UInt8
+end
+function MuliplicativeInverse(x)
+    k = convert(UInt8, trailing_zeros(x))
+    p = multiplicative_inverse_odd(x >> k)
+    MuliplicativeInverse(p, k)
+end
+
+"""
+    multiplicative_inverse_odd(x)
+
+Every odd integer has a multiplicative inverse in ℤ / mod 2^M.
+We can find this by using Newton's method.
+See this blogpost for more details:
+https://lemire.me/blog/2017/09/18/computing-the-inverse-of-odd-integers/
+"""
+function multiplicative_inverse_odd(x::Int32)
+	y = xor(Int32(3)*x, Int32(2)); # this gives an accuracy of 5 bits
+	Base.Cartesian.@nexprs 3 _ -> y = newton_step(x, y)
+end
+function multiplicative_inverse_odd(x::Int64)
+	y = xor(Int64(3)*x, Int64(2)); # this gives an accuracy of 5 bits
+	Base.Cartesian.@nexprs 4 _ -> y = newton_step(x, y)
+end
+function multiplicative_inverse_odd(x::Int128)
+	y = xor(Int128(3)*x, Int128(2)); # this gives an accuracy of 5 bits
+	Base.Cartesian.@nexprs 6 _ -> y = newton_step(x, y)
+end
+newton_step(x, y) = y * (oftype(x, 2) - y * x)
+
+function Base.div(x::T, y::MuliplicativeInverse{T}) where T
+    (x >> y.k) * y.p
+end
+
+
 """
     cayley(Aᵢ...)
 
@@ -14,14 +58,17 @@ function cayley(A)
     n = size(A[1], 1)
     I = eltype(A[1])
     # make sure that all matrices have the same number of rows
+	m = size(A[1], 2)
     for i=2:length(A)
         size(A[i], 1) == n || error("Matrices do not have the same number of rows.")
+		m += size(A[i], 2)
     end
-    m = sum(size.(A, 2))
     C = zeros(I, 2n, m)
     j = 1
     for (i, Aᵢ) in enumerate(A), k in 1:size(Aᵢ, 2)
-        C[1:n, j] = Aᵢ[:, k]
+		for l in 1:n
+        	C[l, j] = Aᵢ[l, k]
+		end
         C[n+i, j] = one(I)
         j += 1
     end
@@ -93,7 +140,10 @@ end
 function CayleyIndexing(configuration_sizes::Vector{Int})
     ncolumns = sum(configuration_sizes)
     nconfigurations = length(configuration_sizes)
-    offsets = cumsum([1; configuration_sizes[1:end-1]]) .- 1
+    offsets = [0]
+	for i in 1:nconfigurations - 1
+		push!(offsets, offsets[i] + configuration_sizes[i])
+	end
     CayleyIndexing(configuration_sizes, ncolumns, nconfigurations, offsets)
 end
 CayleyIndexing(config_sizes) = CayleyIndexing(collect(config_sizes))
@@ -129,6 +179,17 @@ nconfigurations(CI::CayleyIndexing) = CI.nconfigurations
 The number of columns of the cayley matrix
 """
 ncolumns(CI::CayleyIndexing) = CI.ncolumns
+
+"""
+	configuration(cayley_indexing, i)
+
+Returns an range indexing the columns of the cayley matrix corresponding to the
+`i`-th configuration.
+"""
+function configuration(CI::CayleyIndexing, i)
+	off = offset(CI, i)
+	(off+1):(off+CI.configuration_sizes[i])
+end
 
 Base.@propagate_inbounds Base.getindex(CI::CayleyIndexing, i, j) = CI.offsets[i] + j
 
@@ -189,15 +250,25 @@ mutable struct MixedCell{I<:Integer}
     volume::I
 
     indexing::CayleyIndexing # we store these duplicates
+
+    # caches
+    rotated_column::Vector{I}
+	rotated_in_ineq::Vector{I}
+	dot::Vector{I}
 end
 
 function MixedCell(indices, cayley::Matrix, indexing::CayleyIndexing)
     table, volume = circuit_table(indices, cayley, indexing)
-    MixedCell(indices, table, volume, indexing)
+    rotated_column = [zero(eltype(cayley)) for _ in indexing]
+	rotated_in_ineq = table[1,:]
+	dot = table[:, 1]
+    MixedCell(indices, table, volume, indexing, rotated_column, rotated_in_ineq, dot)
 end
 
 function Base.copy(M::MixedCell)
-    MixedCell(copy(M.indices), copy(M.circuit_table), copy(M.volume), copy(M.indexing))
+    MixedCell(copy(M.indices), copy(M.circuit_table), copy(M.volume),
+              copy(M.indexing), copy(M.rotated_column), copy(M.rotated_in_ineq),
+			  copy(M.dot))
 end
 
 function Base.:(==)(M₁::MixedCell, M₂::MixedCell)
@@ -220,7 +291,7 @@ function circuit_table(mixed_cell_indices, cayley::Matrix{I}, indexing::CayleyIn
         (ind.col_index == aᵢ || ind.col_index == bᵢ) && continue
 
         # compute a circuit
-        x = D⁻¹ * cayley[:, ind.cayley_index]
+        x = D⁻¹ * (@view cayley[:, ind.cayley_index])
         x .*= volume
 
         # we pick every second entry of x
@@ -307,6 +378,45 @@ function inequality(cell::MixedCell, ineq::CayleyIndex)
 end
 
 """
+    all_inequality_dots!(result, cell::MixedCell, τ)
+
+Compute the dot product of all inequalities with `τ` and store in `result`.
+"""
+function all_inequality_dots!(result, cell::MixedCell, τ)
+	n, m = nconfigurations(cell.indexing), ncolumns(cell.indexing)
+
+	@inbounds for k in 1:m
+		result[k] = -cell.volume * τ[k]
+	end
+
+    @inbounds for i in 1:n
+		aᵢ, bᵢ = cell.indices[i]
+		k_aᵢ = cell.indexing[i, aᵢ]
+		k_bᵢ = cell.indexing[i, bᵢ]
+		τ_aᵢ = τ[k_aᵢ]
+		τ_bᵢ = τ[k_bᵢ]
+
+		for k in 1:m
+			c₁ = cell.circuit_table[k, i]
+			result[k] += c₁ * τ_aᵢ
+			result[k] -= c₁ * τ_bᵢ
+		end
+		for k in configuration(cell.indexing, i)
+			result[k] += cell.volume * τ_bᵢ
+		end
+    end
+
+ 	# Correct our result for the bad indices
+	@inbounds for i in 1:n
+		aᵢ, bᵢ = cell.indices[i]
+		result[cell.indexing[i, aᵢ]] = zero(eltype(result))
+		result[cell.indexing[i, bᵢ]] = zero(eltype(result))
+	end
+
+    result
+end
+
+"""
     inequality_dot(cell::MixedCell, ineq::CayleyIndex, τ)
 
 Compute the dot product of the given inequality with `τ`.
@@ -329,14 +439,14 @@ end
 Compute the first violated inequality in the given mixed cell with respect to the given
 term ordering and the target weight vector `τ`.
 """
-function first_violated_inequality(mixed_cell::MixedCell{In}, τ::Vector, ord::TermOrdering) where {In}
+function first_violated_inequality(mixed_cell::MixedCell{In}, τ::Vector{In}, ord::TermOrdering) where {In}
     empty = true
     best_index = first(mixed_cell.indexing)
     best_dot = zero(In)
 
+	all_inequality_dots!(mixed_cell.dot, mixed_cell, τ)
     for I in mixed_cell.indexing
-        is_valid_inquality(mixed_cell, I) || continue
-        dot_I = inequality_dot(mixed_cell, I, τ)
+		dot_I = mixed_cell.dot[I.cayley_index]
         if dot_I < 0
             # TODO: Can we avoid this check sometimes?
             if empty || circuit_less(mixed_cell, best_index, dot_I, I, best_dot, ord)
@@ -431,18 +541,45 @@ Exchange either the first or second column (depending on `exchange`) in the
 configuration defined by `ineq` with the column defined in `ineq`.
 """
 function exchange_column!(cell::MixedCell, exchange::Exchange, ineq::CayleyIndex)
+	rotated_column, rotated_in_ineq = cell.rotated_column, cell.rotated_in_ineq
+	table = cell.circuit_table
     i = ineq.config_index
-    new_volume = circuit(cell, exchange, ineq, i)
+	n, m = nconfigurations(cell.indexing), ncolumns(cell.indexing)
 
-    rotated_in_ineq = cell.circuit_table[ineq.cayley_index, :]
+	@inbounds begin
+	d = circuit(cell, exchange, ineq, i)
+	# Read out the inequality associated to the colum we want to rotate in
+	for k in 1:n
+		rotated_in_ineq[k] = flipsign(cell.circuit_table[ineq.cayley_index, k], d)
+	end
     if exchange == exchange_first
-        rotated_in_ineq[i] -= cell.volume
+        rotated_in_ineq[i] -= flipsign(cell.volume, d)
     end
 
-    rotated_column = [circuit(cell, exchange, r, ineq.config_index) for r in cell.indexing]
+	if exchange == exchange_first
+		# equivalent to
+		#  for ind in cell.indexing
+		#    rotated_column[ind.cayley_index] = -circuit_first(ind, i)
+		#  end
+		for k in 1:m
+			rotated_column[k] = -cell.circuit_table[k, i]
+		end
+	else # exchange == exchange_second
+		# equivalent to
+		#  for ind in cell.indexing
+		#    rotated_column[ind.cayley_index] = -circuit_second(ind, i)
+		#  end
+		for k in 1:m
+			rotated_column[k] = cell.circuit_table[k, i]
+		end
+		for k in configuration(cell.indexing, i)
+			rotated_column[k] -= cell.volume
+		end
+	end
 
-    for i in 1:nconfigurations(cell.indexing), k in 1:ncolumns(cell.indexing)
-        cell.circuit_table[k, i] = div(new_volume * cell.circuit_table[k, i] - rotated_column[k] * rotated_in_ineq[i], sign(new_volume) * cell.volume)
+    vol⁻¹ = MuliplicativeInverse(flipsign(cell.volume, d))
+    for i in 1:n, k in 1:m
+        table[k, i] = div(d * table[k, i] + rotated_column[k] * rotated_in_ineq[i], vol⁻¹)
     end
 
     #  the violated ineq is now an ineq at the old index
@@ -452,12 +589,15 @@ function exchange_column!(cell::MixedCell, exchange::Exchange, ineq::CayleyIndex
         rotated_out = CayleyIndex(i, cell.indices[i][2], ineq.offset)
     end
 
-    cell.circuit_table[rotated_out.cayley_index, :] = -rotated_in_ineq * sign(new_volume)
+    # Write loop!
+	for k in 1:n
+    	table[rotated_out.cayley_index, k] = -flipsign(rotated_in_ineq[k], d)
+	end
     if exchange == exchange_first
-        cell.circuit_table[rotated_out.cayley_index, i] += new_volume
+        table[rotated_out.cayley_index, i] += d
     end
 
-    cell.volume = abs(new_volume)
+    cell.volume = abs(d)
     cell.indices[i] = begin
         if exchange == exchange_first
             (ineq.col_index, cell.indices[i][2])
@@ -467,12 +607,15 @@ function exchange_column!(cell::MixedCell, exchange::Exchange, ineq::CayleyIndex
     end
 
     # clear table for ineqs corresponding to mixed cell columns
-    for j in 1:nconfigurations(cell.indexing)
+    for j in 1:n
         aⱼ, bⱼ = cell.indices[j]
         off = offset(cell.indexing, j)
-        cell.circuit_table[aⱼ + off, :] .= zero(eltype(cell.circuit_table))
-        cell.circuit_table[bⱼ + off, :] .= zero(eltype(cell.circuit_table))
+		for k in 1:n
+	        table[aⱼ + off, k] = zero(eltype(table))
+        	table[bⱼ + off, k] = zero(eltype(table))
+		end
     end
+	end
 
     cell
 end
