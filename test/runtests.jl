@@ -2,7 +2,6 @@ using TropicalHomotopyContinuation
 const THC = TropicalHomotopyContinuation
 using Test
 
-
 function cyclic(n)
 	ret = Matrix{Int}[];
 	for i in 1:(n-1)
@@ -20,7 +19,6 @@ function cyclic(n)
 
 	return ret
 end
-
 
 @testset "TropicalHomotopyContinuation" begin
     A₁ = [0 0 1 1; 0 2 0 1]
