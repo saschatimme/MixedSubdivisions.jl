@@ -189,15 +189,20 @@ mutable struct MixedCell{I<:Integer}
     volume::I
 
     indexing::CayleyIndexing # we store these duplicates
+
+    # caches
+    rotated_column::Vector{I}
 end
 
 function MixedCell(indices, cayley::Matrix, indexing::CayleyIndexing)
     table, volume = circuit_table(indices, cayley, indexing)
-    MixedCell(indices, table, volume, indexing)
+    rotated_column = [zero(eltype(cayley)) for _ in indexing]
+    MixedCell(indices, table, volume, indexing, rotated_column)
 end
 
 function Base.copy(M::MixedCell)
-    MixedCell(copy(M.indices), copy(M.circuit_table), copy(M.volume), copy(M.indexing))
+    MixedCell(copy(M.indices), copy(M.circuit_table), copy(M.volume),
+              copy(M.indexing), copy(M.rotated_column))
 end
 
 function Base.:(==)(M₁::MixedCell, M₂::MixedCell)
@@ -439,7 +444,12 @@ function exchange_column!(cell::MixedCell, exchange::Exchange, ineq::CayleyIndex
         rotated_in_ineq[i] -= cell.volume
     end
 
-    rotated_column = [circuit(cell, exchange, r, ineq.config_index) for r in cell.indexing]
+    rotated_column = cell.rotated_column
+    for r in cell.indexing
+        # remove all branching
+        rotated_column[r.cayley_index] = -circuit(cell, exchange, r, ineq.config_index)
+    end
+
 
     for i in 1:nconfigurations(cell.indexing), k in 1:ncolumns(cell.indexing)
         cell.circuit_table[k, i] = div(new_volume * cell.circuit_table[k, i] - rotated_column[k] * rotated_in_ineq[i], sign(new_volume) * cell.volume)
