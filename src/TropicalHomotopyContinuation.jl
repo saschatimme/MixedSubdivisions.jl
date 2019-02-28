@@ -58,14 +58,17 @@ function cayley(A)
     n = size(A[1], 1)
     I = eltype(A[1])
     # make sure that all matrices have the same number of rows
+	m = size(A[1], 2)
     for i=2:length(A)
         size(A[i], 1) == n || error("Matrices do not have the same number of rows.")
+		m += size(A[i], 2)
     end
-    m = sum(size.(A, 2))
     C = zeros(I, 2n, m)
     j = 1
     for (i, Aᵢ) in enumerate(A), k in 1:size(Aᵢ, 2)
-        C[1:n, j] = Aᵢ[:, k]
+		for l in 1:n
+        	C[l, j] = Aᵢ[l, k]
+		end
         C[n+i, j] = one(I)
         j += 1
     end
@@ -137,7 +140,10 @@ end
 function CayleyIndexing(configuration_sizes::Vector{Int})
     ncolumns = sum(configuration_sizes)
     nconfigurations = length(configuration_sizes)
-    offsets = cumsum([1; configuration_sizes[1:end-1]]) .- 1
+    offsets = [0]
+	for i in 1:nconfigurations - 1
+		push!(offsets, offsets[i] + configuration_sizes[i])
+	end
     CayleyIndexing(configuration_sizes, ncolumns, nconfigurations, offsets)
 end
 CayleyIndexing(config_sizes) = CayleyIndexing(collect(config_sizes))
@@ -285,7 +291,7 @@ function circuit_table(mixed_cell_indices, cayley::Matrix{I}, indexing::CayleyIn
         (ind.col_index == aᵢ || ind.col_index == bᵢ) && continue
 
         # compute a circuit
-        x = D⁻¹ * cayley[:, ind.cayley_index]
+        x = D⁻¹ * (@view cayley[:, ind.cayley_index])
         x .*= volume
 
         # we pick every second entry of x
