@@ -198,21 +198,22 @@ Base.length(C::CayleyIndexing) = C.ncolumns
 Base.eltype(C::Type{CayleyIndexing}) = NTuple{3, Int}
 function Base.iterate(CI::CayleyIndexing)
     i = j = 1
+	@inbounds mᵢ = CI.configuration_sizes[i]
     @inbounds offset = CI.offsets[i]
-    CayleyIndex(i, j, offset), (i, j)
+    CayleyIndex(i, j, offset), (i, j, mᵢ, offset)
 end
 function Base.iterate(CI::CayleyIndexing, state)
-    i, j = state
-    @inbounds mᵢ = CI.configuration_sizes[i]
+    i, j, mᵢ, offset = state
     if j == mᵢ
         j = 1
         i += 1
+		@inbounds offset = CI.offsets[i]
+		@inbounds mᵢ = CI.configuration_sizes[i]
     else
         j += 1
     end
     i > CI.nconfigurations && return nothing
-    @inbounds offset = CI.offsets[i]
-    CayleyIndex(i, j, offset), (i, j)
+    CayleyIndex(i, j, offset), (i, j, mᵢ, offset)
 end
 
 """
@@ -391,18 +392,16 @@ function all_inequality_dots!(result, cell::MixedCell, τ)
 
     @inbounds for i in 1:n
 		aᵢ, bᵢ = cell.indices[i]
-		k_aᵢ = cell.indexing[i, aᵢ]
-		k_bᵢ = cell.indexing[i, bᵢ]
-		τ_aᵢ = τ[k_aᵢ]
-		τ_bᵢ = τ[k_bᵢ]
+		τ_aᵢ =  τ[cell.indexing[i, aᵢ]]
+		τ_bᵢ = -τ[cell.indexing[i, bᵢ]]
 
 		for k in 1:m
 			c₁ = cell.circuit_table[k, i]
 			result[k] += c₁ * τ_aᵢ
-			result[k] -= c₁ * τ_bᵢ
+			result[k] += c₁ * τ_bᵢ
 		end
 		for k in configuration(cell.indexing, i)
-			result[k] += cell.volume * τ_bᵢ
+			result[k] -= cell.volume * τ_bᵢ
 		end
     end
 
@@ -417,23 +416,6 @@ function all_inequality_dots!(result, cell::MixedCell, τ)
 end
 
 """
-    inequality_dot(cell::MixedCell, ineq::CayleyIndex, τ)
-
-Compute the dot product of the given inequality with `τ`.
-"""
-function inequality_dot(cell::MixedCell, ineq::CayleyIndex, τ)
-    out = -cell.volume * τ[ineq.cayley_index]
-    for i in 1:length(cell.indices)
-        aᵢ, bᵢ = cell.indices[i]
-        c₁ = circuit_first(cell, ineq, i)
-        c₂ = circuit_second(cell, ineq, i)
-        out += c₁ * τ[cell.indexing[i, aᵢ]]
-        out += c₂ * τ[cell.indexing[i, bᵢ]]
-    end
-    out
-end
-
-"""
     first_violated_inequality(mixed_cell::MixedCell{I}, τ::Vector, ord::TermOrdering)
 
 Compute the first violated inequality in the given mixed cell with respect to the given
@@ -445,7 +427,7 @@ function first_violated_inequality(mixed_cell::MixedCell{In}, τ::Vector{In}, or
     best_dot = zero(In)
 
 	all_inequality_dots!(mixed_cell.dot, mixed_cell, τ)
-    for I in mixed_cell.indexing
+    @inbounds for I in mixed_cell.indexing
 		dot_I = mixed_cell.dot[I.cayley_index]
         if dot_I < 0
             # TODO: Can we avoid this check sometimes?
@@ -474,7 +456,25 @@ function circuit_less(cell::MixedCell, ind₁::CayleyIndex, λ₁, ind₂::Cayle
 end
 
 function circuit_less(cell::MixedCell, ind₁::CayleyIndex, λ₁, ind₂::CayleyIndex, λ₂, ord::LexicographicOrdering)
-    for (i, (aᵢ, bᵢ)) in enumerate(cell.indices)
+    @inbounds for i in 1:length(cell.indices)
+		aᵢ, bᵢ = cell.indices[i]
+		# Optimize for the common case
+		if i ≠ ind₁.config_index && i ≠ ind₂.config_index
+			c₁_aᵢ = cell.circuit_table[ind₁.cayley_index, i]
+			c₂_aᵢ = cell.circuit_table[ind₂.cayley_index, i]
+			λc₁, λc₂ = λ₁ * c₁_aᵢ, λ₂ * c₂_aᵢ
+			if λc₁ ≠ λc₂
+				# we have c₁_aᵢ=-c₁_bᵢ and c₂_aᵢ =-c₂_bᵢ
+				if aᵢ < bᵢ
+					return λc₁ < λc₂
+				else
+					return λc₁ > λc₂
+				end
+			else
+				continue
+			end
+		end
+
         sorted, n = begin
             if ind₁.config_index == ind₂.config_index == i
                 swapsort4(aᵢ, bᵢ, ind₁.col_index, ind₂.col_index), 4
@@ -509,17 +509,17 @@ end
 Sorting networks to sort 2, 3, and 4 elements. Always returns a tuple with 4 elements,
 where if necessary the tuple is padded with zeros.
 """
-function swapsort4(a, b)
+@inline function swapsort4(a, b)
     a, b = minmax(a, b)
     (a, b, zero(a), zero(a))
 end
-function swapsort4(a, b, c)
+@inline function swapsort4(a, b, c)
     b, c = minmax(b, c)
     a, c = minmax(a, c)
     a, b = minmax(a, b)
     return (a, b, c, zero(a))
 end
-function swapsort4(a, b, c, d)
+@inline function swapsort4(a, b, c, d)
     a, b = minmax(a, b)
     c, d = minmax(c, d)
     a, c = minmax(a, c)
