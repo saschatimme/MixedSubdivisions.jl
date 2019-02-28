@@ -4,6 +4,50 @@ export MixedCell, MixedSubdivision, TermOrdering, cayley, MixedCellTraverser, mi
 
 import LinearAlgebra
 
+
+"""
+	MuliplicativeInverse(a::Signed)
+
+Computes a multiplicative inverse of a signed integer `a`.
+Currently the only supported function `div`.
+"""
+struct MuliplicativeInverse{T<:Signed}
+    p::T
+    k::UInt8
+end
+function MuliplicativeInverse(x)
+    k = convert(UInt8, trailing_zeros(x))
+    p = multiplicative_inverse_odd(x >> k)
+    MuliplicativeInverse(p, k)
+end
+
+"""
+    multiplicative_inverse_odd(x)
+
+Every odd integer has a multiplicative inverse in ℤ / mod 2^M.
+We can find this by using Newton's method.
+See this blogpost for more details:
+https://lemire.me/blog/2017/09/18/computing-the-inverse-of-odd-integers/
+"""
+function multiplicative_inverse_odd(x::Int32)
+	y = xor(Int32(3)*x, Int32(2)); # this gives an accuracy of 5 bits
+	Base.Cartesian.@nexprs 3 _ -> y = newton_step(x, y)
+end
+function multiplicative_inverse_odd(x::Int64)
+	y = xor(Int64(3)*x, Int64(2)); # this gives an accuracy of 5 bits
+	Base.Cartesian.@nexprs 4 _ -> y = newton_step(x, y)
+end
+function multiplicative_inverse_odd(x::Int128)
+	y = xor(Int128(3)*x, Int128(2)); # this gives an accuracy of 5 bits
+	Base.Cartesian.@nexprs 6 _ -> y = newton_step(x, y)
+end
+newton_step(x, y) = y * (oftype(x, 2) - y * x)
+
+function Base.div(x::T, y::MuliplicativeInverse{T}) where T
+    (x >> y.k) * y.p
+end
+
+
 """
     cayley(Aᵢ...)
 
@@ -451,8 +495,9 @@ function exchange_column!(cell::MixedCell, exchange::Exchange, ineq::CayleyIndex
     end
 
 
+    vol⁻¹ = MuliplicativeInverse(sign(new_volume) * cell.volume)
     for i in 1:nconfigurations(cell.indexing), k in 1:ncolumns(cell.indexing)
-        cell.circuit_table[k, i] = div(new_volume * cell.circuit_table[k, i] - rotated_column[k] * rotated_in_ineq[i], sign(new_volume) * cell.volume)
+        @inbounds cell.circuit_table[k, i] = div(new_volume * cell.circuit_table[k, i] + rotated_column[k] * rotated_in_ineq[i], vol⁻¹)
     end
 
     #  the violated ineq is now an ineq at the old index
