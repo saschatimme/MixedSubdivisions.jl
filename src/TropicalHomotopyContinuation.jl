@@ -248,18 +248,21 @@ mutable struct MixedCell{I<:Integer}
     # caches
     rotated_column::Vector{I}
 	rotated_in_ineq::Vector{I}
+	dot::Vector{I}
 end
 
 function MixedCell(indices, cayley::Matrix, indexing::CayleyIndexing)
     table, volume = circuit_table(indices, cayley, indexing)
     rotated_column = [zero(eltype(cayley)) for _ in indexing]
 	rotated_in_ineq = table[1,:]
-    MixedCell(indices, table, volume, indexing, rotated_column, rotated_in_ineq)
+	dot = table[:, 1]
+    MixedCell(indices, table, volume, indexing, rotated_column, rotated_in_ineq, dot)
 end
 
 function Base.copy(M::MixedCell)
     MixedCell(copy(M.indices), copy(M.circuit_table), copy(M.volume),
-              copy(M.indexing), copy(M.rotated_column), copy(M.rotated_in_ineq))
+              copy(M.indexing), copy(M.rotated_column), copy(M.rotated_in_ineq),
+			  copy(M.dot))
 end
 
 function Base.:(==)(M₁::MixedCell, M₂::MixedCell)
@@ -369,6 +372,45 @@ function inequality(cell::MixedCell, ineq::CayleyIndex)
 end
 
 """
+    all_inequality_dots!(result, cell::MixedCell, τ)
+
+Compute the dot product of all inequalities with `τ` and store in `result`.
+"""
+function all_inequality_dots!(result, cell::MixedCell, τ)
+	n, m = nconfigurations(cell.indexing), ncolumns(cell.indexing)
+
+	@inbounds for k in 1:m
+		result[k] = -cell.volume * τ[k]
+	end
+
+    @inbounds for i in 1:n
+		aᵢ, bᵢ = cell.indices[i]
+		k_aᵢ = cell.indexing[i, aᵢ]
+		k_bᵢ = cell.indexing[i, bᵢ]
+		τ_aᵢ = τ[k_aᵢ]
+		τ_bᵢ = τ[k_bᵢ]
+
+		for k in 1:m
+			c₁ = cell.circuit_table[k, i]
+			result[k] += c₁ * τ_aᵢ
+			result[k] -= c₁ * τ_bᵢ
+		end
+		for k in configuration(cell.indexing, i)
+			result[k] += cell.volume * τ_bᵢ
+		end
+    end
+
+ 	# Correct our result for the bad indices
+	@inbounds for i in 1:n
+		aᵢ, bᵢ = cell.indices[i]
+		result[cell.indexing[i, aᵢ]] = zero(eltype(result))
+		result[cell.indexing[i, bᵢ]] = zero(eltype(result))
+	end
+
+    result
+end
+
+"""
     inequality_dot(cell::MixedCell, ineq::CayleyIndex, τ)
 
 Compute the dot product of the given inequality with `τ`.
@@ -391,14 +433,14 @@ end
 Compute the first violated inequality in the given mixed cell with respect to the given
 term ordering and the target weight vector `τ`.
 """
-function first_violated_inequality(mixed_cell::MixedCell{In}, τ::Vector, ord::TermOrdering) where {In}
+function first_violated_inequality(mixed_cell::MixedCell{In}, τ::Vector{In}, ord::TermOrdering) where {In}
     empty = true
     best_index = first(mixed_cell.indexing)
     best_dot = zero(In)
 
+	all_inequality_dots!(mixed_cell.dot, mixed_cell, τ)
     for I in mixed_cell.indexing
-        is_valid_inquality(mixed_cell, I) || continue
-        dot_I = inequality_dot(mixed_cell, I, τ)
+		dot_I = mixed_cell.dot[I.cayley_index]
         if dot_I < 0
             # TODO: Can we avoid this check sometimes?
             if empty || circuit_less(mixed_cell, best_index, dot_I, I, best_dot, ord)
