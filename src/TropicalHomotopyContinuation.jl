@@ -1,6 +1,9 @@
 module TropicalHomotopyContinuation
 
-export MixedCell, MixedSubdivision, TermOrdering, cayley, MixedCellTraverser, mixed_volume
+export MixedCell, TermOrdering, cayley, MixedCellTraverser, mixed_volume
+
+import MultivariatePolynomials
+const MP = MultivariatePolynomials
 
 import LinearAlgebra
 
@@ -876,13 +879,26 @@ function (MVC::MixedVolumeCounter)(vol, indices)
     MVC.volume += vol
 end
 
-mixed_volume(Aᵢ...) = mixed_volume(Aᵢ)
+"""
+    mixed_volume(F::Vector{<:MP.AbstractPolynomialLike})
+
+Compute the mixed volume of the given polynomial system `F`
+"""
+mixed_volume(Aᵢ::Matrix...) = mixed_volume(Aᵢ)
 function mixed_volume(As)
     mv = MixedVolumeCounter()
     total_degree_homotopy(mv, As)
     mv.volume
 end
+function mixed_volume(F::Vector{<:MP.AbstractPolynomialLike})
+    mixed_volume(support(F))
+end
 
+function support(F::Vector{<:MP.AbstractPolynomialLike}, variables=MP.variables(F))
+    map(F) do f
+        [MP.degree(t, v) for v in variables, t in MP.terms(f)]
+    end
+end
 
 #
 # """

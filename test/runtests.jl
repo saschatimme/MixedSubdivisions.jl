@@ -1,24 +1,7 @@
 using TropicalHomotopyContinuation
 const THC = TropicalHomotopyContinuation
+import PolynomialTestSystems: equations, cyclic, ipp2
 using Test
-
-function cyclic(n)
-	ret = Matrix{Int}[];
-	for i in 1:(n-1)
-		m = zeros(Int, n, n)
-		for y in 0:n-1, x in 0:n-1
-			m[y+1, x+1]=((x-y+n)%n)<i;
-		end
-		push!(ret, m)
-	end
-	last = zeros(Int, n, 2);
-	for y in 1:n
-		last[y, 1] = 1
-	end
-	push!(ret, last)
-
-	return ret
-end
 
 @testset "TropicalHomotopyContinuation" begin
     A₁ = [0 0 1 1; 0 2 0 1]
@@ -65,6 +48,7 @@ end
     @test cell2.volume == 1
     @test cell == THC.exchange_column(cell2, THC.exchange_first, ind_back)
 
-	@test mixed_volume(cyclic(5)) == 70
-	@test mixed_volume(cyclic(7)) == 924
+	@test mixed_volume(equations(cyclic(5))) == 70
+	@test mixed_volume(equations(cyclic(7))) == 924
+	@test mixed_volume(equations(ipp2())) == 288
 end
