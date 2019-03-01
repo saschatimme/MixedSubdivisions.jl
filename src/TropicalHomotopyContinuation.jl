@@ -208,14 +208,14 @@ end
 function Base.iterate(CI::CayleyIndexing, state)
     i, j, mᵢ, offset = state
     if j == mᵢ
+        i == CI.nconfigurations && return nothing
         j = 1
         i += 1
-    @inbounds offset = CI.offsets[i]
-    @inbounds mᵢ = CI.configuration_sizes[i]
+        @inbounds offset = CI.offsets[i]
+        @inbounds mᵢ = CI.configuration_sizes[i]
     else
         j += 1
     end
-    i > CI.nconfigurations && return nothing
     CayleyIndex(i, j, offset), (i, j, mᵢ, offset)
 end
 
@@ -298,8 +298,10 @@ function circuit_table(mixed_cell_indices, cayley::Matrix{I}, indexing::CayleyIn
         x = D⁻¹ * (@view cayley[:, ind.cayley_index])
         x .*= volume
 
+        # @show length(x) n size(table) ind.cayley_index
         # we pick every second entry of x
         for (k, l) in enumerate(1:2:2n)
+            # @show k l
             table[ind.cayley_index, k] = round(Int, x[l])
         end
     end
