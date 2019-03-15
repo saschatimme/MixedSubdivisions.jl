@@ -184,6 +184,13 @@ The number of columns of the cayley matrix
 ncolumns(CI::CayleyIndexing) = CI.ncolumns
 
 """
+    ncolumns(cayley_indexing, i)
+
+The number of columns of the i-th configuration of the cayley matrix
+"""
+ncolumns(CI::CayleyIndexing, i) = CI.configuration_sizes[i]
+
+"""
     configuration(cayley_indexing, i)
 
 Returns an range indexing the columns of the cayley matrix corresponding to the
@@ -220,7 +227,7 @@ function Base.iterate(CI::CayleyIndexing, state)
 end
 
 """
-    MixedCell(indices, cayley_matrix, indexing)
+    MixedCell(indices, cayley_matrix, indexing; fill_circuit_table=true)
 
 
 """
@@ -261,8 +268,13 @@ mutable struct MixedCell{I<:Integer}
     dot::Vector{I}
 end
 
-function MixedCell(indices, cayley::Matrix, indexing::CayleyIndexing)
-    table, volume = circuit_table(indices, cayley, indexing)
+function MixedCell(indices, cayley::Matrix{I}, indexing::CayleyIndexing; fill_circuit_table::Bool=true) where {I}
+    table = zeros(I, ncolumns(indexing), nconfigurations(indexing))
+    if fill_circuit_table
+        volume = fill_circuit_table!(table, indices, cayley, indexing)
+    else
+        volume = 0
+    end
     rotated_column = [zero(eltype(cayley)) for _ in indexing]
     rotated_in_ineq = table[1,:]
     dot = table[:, 1]
@@ -281,7 +293,7 @@ function Base.:(==)(M₁::MixedCell, M₂::MixedCell)
     M₁.circuit_table == M₂.circuit_table
 end
 
-function circuit_table(mixed_cell_indices, cayley::Matrix{I}, indexing::CayleyIndexing) where {I}
+function fill_circuit_table!(table, mixed_cell_indices, cayley::Matrix{I}, indexing::CayleyIndexing) where {I}
     D = mixed_cell_submatrix(cayley, indexing, mixed_cell_indices)
     n, m = nconfigurations(indexing), ncolumns(indexing)
     lu = LinearAlgebra.lu(D)
@@ -289,7 +301,6 @@ function circuit_table(mixed_cell_indices, cayley::Matrix{I}, indexing::CayleyIn
     x = zeros(2n)
     y, b, b̂ = zeros(Int, 2n), zeros(Int, 2n), zeros(Int, 2n)
     # We need to compute the initial circuits from scratch
-    table = zeros(I, m, n)
     D⁻¹ = LinearAlgebra.inv(lu)
     for ind in indexing
         aᵢ, bᵢ = mixed_cell_indices[ind.config_index]
@@ -312,7 +323,7 @@ function circuit_table(mixed_cell_indices, cayley::Matrix{I}, indexing::CayleyIn
         end
     end
 
-    table, volume
+    volume
 end
 
 function mixed_cell_submatrix(C::Matrix, indexing::CayleyIndexing, mixed_cell_indices)
@@ -390,11 +401,12 @@ function inequality(cell::MixedCell, ineq::CayleyIndex)
 end
 
 """
-    all_inequality_dots!(result, cell::MixedCell, τ)
+    compute_inequality_dots!(cell::MixedCell, τ)
 
 Compute the dot product of all inequalities with `τ` and store in `result`.
 """
-function all_inequality_dots!(result, cell::MixedCell, τ)
+function compute_inequality_dots!(cell::MixedCell, τ)
+    result = cell.dot
     n, m = nconfigurations(cell.indexing), ncolumns(cell.indexing)
 
     @inbounds for k in 1:m
@@ -423,7 +435,7 @@ function all_inequality_dots!(result, cell::MixedCell, τ)
         result[cell.indexing[i, bᵢ]] = zero(eltype(result))
     end
 
-    result
+    cell
 end
 
 """
@@ -437,7 +449,7 @@ function first_violated_inequality(mixed_cell::MixedCell{In}, τ::Vector{In}, or
     best_index = first(mixed_cell.indexing)
     best_dot = zero(In)
 
-    all_inequality_dots!(mixed_cell.dot, mixed_cell, τ)
+    compute_inequality_dots!(mixed_cell, τ)
     @inbounds for I in mixed_cell.indexing
         dot_I = mixed_cell.dot[I.cayley_index]
         if dot_I < 0
@@ -727,7 +739,7 @@ mutable struct MixedCellTraverser{I, Ord<:TermOrdering}
     search_tree::Vector{SearchTreeVertex}
 end
 
-function MixedCellTraverser(mixed_cell::MixedCell, target, ord)
+function MixedCellTraverser(mixed_cell::MixedCell, target, ord=LexicographicOrdering())
     MixedCellTraverser(mixed_cell, target, ord, SearchTreeVertex[])
 end
 
@@ -855,7 +867,7 @@ function total_degree_homotopy_start(As)
     A = cayley(map(Aᵢ -> [degree(Aᵢ)*L Aᵢ], As))
 
     # τ is the vector with an entry of each column in A having entries
-    # indexed by one of the additiobal columns equal to -1 and 0 otherwise
+    # indexed by one of the additional columns equal to -1 and 0 otherwise
     τ = zeros(eltype(A), size(A, 2))
     j = 1
     for (i, Aᵢ) in enumerate(As)
@@ -886,10 +898,13 @@ end
 
 """
     mixed_volume(F::Vector{<:MP.AbstractPolynomialLike})
+    mixed_volume(𝑨::Vector{<:Matrix})
 
-Compute the mixed volume of the given polynomial system `F`
+Compute the mixed volume of the given polynomial system `F` resp. represented
+by the support `𝑨`.
 """
 mixed_volume(Aᵢ::Matrix...) = mixed_volume(Aᵢ)
+mixed_volume(f::MP.AbstractPolynomialLike...) = mixed_volume(f)
 function mixed_volume(As)
     mv = MixedVolumeCounter()
     total_degree_homotopy(mv, As)
@@ -903,6 +918,69 @@ function support(F::Vector{<:MP.AbstractPolynomialLike}, variables=MP.variables(
     map(F) do f
         [MP.degree(t, v) for v in variables, t in MP.terms(f)]
     end
+end
+
+"""
+    enumerate_mixed_cells(f, As, weights)
+
+Enumerate all mixed cells.
+"""
+function enumerate_mixed_cells(f, As, weights)
+    # We need to chain two traversers
+    # 1) We compute a mixed subdivision w.r.t to the lexicographic ordering
+    # 2) Each cell we then track to the mixed cells wrt to the given lifting
+    start_mixed_cell, τ = total_degree_homotopy_start(As)
+    start_traverser = MixedCellTraverser(start_mixed_cell, τ)
+
+    target_cell = unitiliazed_mixed_cell(As)
+    target_weights = copy(weights[1])
+    for i = 2:length(weights)
+        append!(target_weights, weights[i])
+    end
+    target_traverser = MixedCellTraverser(target_cell, target_weights)
+
+    traverse(start_traverser) do cell
+        n = length(cell.indices)
+        # ignore all cells where one of the artifical columns is part
+        for (aᵢ, bᵢ) in cell.indices
+            (aᵢ ≤ n + 1 || bᵢ ≤ n + 1) && return nothing
+        end
+        # Chain to the second traverser
+        total_degree_carry_over!(target_traverser.mixed_cell, cell)
+        traverse(target_traverser) do cell₂
+            compute_inequality_dots!(cell₂, target_weights)
+            f(cell₂)
+        end
+    end
+end
+
+"Create a mixed cell filled with dummy data."
+function unitiliazed_mixed_cell(As)
+    indices = map(_ -> (1,2), As)
+    indexing = CayleyIndexing(size.(As, 2))
+    MixedCell(indices, cayley(As), indexing; fill_circuit_table=false)
+end
+
+"""
+    total_degree_carry_over!(target_cell::MixedCell, start_cell::MixedCell)
+
+We carry over the state (including circuit table) of a start cell (in a total degree homotopy)
+to the cell corresponding to the final homotopy.
+"""
+function total_degree_carry_over!(B::MixedCell, A::MixedCell)
+    B.indices .= A.indices
+    shift_indices!(B.indices)
+    B.volume = A.volume
+    # The circuit tables are nearly identical, A just has for each configuration n+1 rows too much.
+    n = nconfigurations(B.indexing)
+    for i = 1:n
+        off = offset(B.indexing, i)
+        soff = offset(A.indexing, i)
+        for j = 1:ncolumns(B.indexing, i), k = 1:n
+            @inbounds B.circuit_table[off + j, k] = A.circuit_table[soff + j + n + 1, k]
+        end
+    end
+    B
 end
 
 #
