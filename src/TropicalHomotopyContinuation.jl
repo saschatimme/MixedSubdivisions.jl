@@ -493,7 +493,8 @@ function circuit_less(cell::MixedCell, ind₁::CayleyIndex, λ₁, ind₂::Cayle
                 swapsort4(aᵢ, bᵢ, ind₁.col_index), 3
             elseif ind₂.config_index == i
                 swapsort4(aᵢ, bᵢ, ind₂.col_index), 3
-            else
+            else # Don't remove this branch there is a compiler
+                 # bug which would result in a wrong behaviour
                 swapsort4(aᵢ, bᵢ), 2
             end
         end
