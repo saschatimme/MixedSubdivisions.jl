@@ -298,7 +298,6 @@ function circuit_table(mixed_cell_indices, cayley::Matrix{I}, indexing::CayleyIn
         x = D⁻¹ * (@view cayley[:, ind.cayley_index])
         x .*= volume
 
-        # @show length(x) n size(table) ind.cayley_index
         # we pick every second entry of x
         for (k, l) in enumerate(1:2:2n)
             # @show k l
@@ -412,9 +411,9 @@ function all_inequality_dots!(result, cell::MixedCell, τ)
 
  	# Correct our result for the bad indices
     @inbounds for i in 1:n
-    aᵢ, bᵢ = cell.indices[i]
-    result[cell.indexing[i, aᵢ]] = zero(eltype(result))
-    result[cell.indexing[i, bᵢ]] = zero(eltype(result))
+        aᵢ, bᵢ = cell.indices[i]
+        result[cell.indexing[i, aᵢ]] = zero(eltype(result))
+        result[cell.indexing[i, bᵢ]] = zero(eltype(result))
     end
 
     result
@@ -433,7 +432,7 @@ function first_violated_inequality(mixed_cell::MixedCell{In}, τ::Vector{In}, or
 
     all_inequality_dots!(mixed_cell.dot, mixed_cell, τ)
     @inbounds for I in mixed_cell.indexing
-    dot_I = mixed_cell.dot[I.cayley_index]
+        dot_I = mixed_cell.dot[I.cayley_index]
         if dot_I < 0
             # TODO: Can we avoid this check sometimes?
             if empty || circuit_less(mixed_cell, best_index, dot_I, I, best_dot, ord)
@@ -594,7 +593,6 @@ function exchange_column!(cell::MixedCell, exchange::Exchange, ineq::CayleyIndex
         rotated_out = CayleyIndex(i, cell.indices[i][2], ineq.offset)
     end
 
-    # Write loop!
     for k in 1:n
     	table[rotated_out.cayley_index, k] = -flipsign(rotated_in_ineq[k], d)
     end
@@ -620,7 +618,7 @@ function exchange_column!(cell::MixedCell, exchange::Exchange, ineq::CayleyIndex
         	table[bⱼ + off, k] = zero(eltype(table))
         end
     end
-    end
+    end # end inbounds
 
     cell
 end
@@ -827,7 +825,7 @@ end
 
 function shift_indices!(indices)
     n = length(indices)
-    for i in 1:n
+    @inbounds for i in 1:n
         aᵢ, bᵢ = indices[i]
         indices[i] = (aᵢ - (n + 1), bᵢ - (n + 1))
     end
@@ -835,7 +833,7 @@ function shift_indices!(indices)
 end
 function unshift_indices!(indices)
     n = length(indices)
-    for i in 1:n
+    @inbounds for i in 1:n
         aᵢ, bᵢ = indices[i]
         indices[i] = (aᵢ + n + 1, bᵢ + n + 1)
     end
@@ -847,9 +845,7 @@ function total_degree_homotopy_start(As)
     n = size(As[1], 1)
     L = [zeros(eltype(As[1]), n) LinearAlgebra.I]
     # construct padded cayley matrix
-    A = cayley(map(As) do Aᵢ
-        [degree(Aᵢ)*L Aᵢ]
-    end)
+    A = cayley(map(Aᵢ -> [degree(Aᵢ)*L Aᵢ], As))
 
     # τ is the vector with an entry of each column in A having entries
     # indexed by one of the additiobal columns equal to -1 and 0 otherwise
