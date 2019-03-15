@@ -626,13 +626,13 @@ function exchange_column(cell::MixedCell, exchange::Exchange, ineq::CayleyIndex)
     exchange_column!(copy(cell), exchange, ineq)
 end
 
-function Base.reverse(ineq::CayleyIndex, cell::MixedCell, exchange::Exchange)
+function reverse_index(ineq::CayleyIndex, cell::MixedCell, exchange::Exchange)
     if exchange == exchange_first
         j = cell.indices[ineq.config_index][1]
     else # exchange == exchange_second
         j = cell.indices[ineq.config_index][2]
     end
-    ind = CayleyIndex(ineq.config_index, j, ineq.offset)
+    CayleyIndex(ineq.config_index, j, ineq.offset)
 end
 
 Base.@propagate_inbounds function circuit(cell::MixedCell, exchange::Exchange, ineq::CayleyIndex, i)
@@ -693,8 +693,7 @@ struct SearchTreeVertex
 end
 
 function SearchTreeVertex(cell::MixedCell, index::CayleyIndex, exchange::Exchange, update, back=false)
-    reverse_index = reverse(index, cell, exchange)
-    SearchTreeVertex(index, reverse_index, exchange, update, back)
+    SearchTreeVertex(index, reverse_index(index, cell, exchange), exchange, update, back)
 end
 
 function Base.show(io::IO, v::SearchTreeVertex)

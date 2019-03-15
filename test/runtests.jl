@@ -38,12 +38,12 @@ using Test
     @test THC.exchange_column(cell, THC.exchange_first, ineq) == MixedCell([(4, 3), (1, 3)], A, indexing)
     @test THC.exchange_column(cell, THC.exchange_second, ineq) == MixedCell([(2, 4), (1, 3)], A, indexing)
 
-    ind_back = reverse(ineq, cell, THC.exchange_second)
+    ind_back = THC.reverse_index(ineq, cell, THC.exchange_second)
     cell2 = THC.exchange_column(cell, THC.exchange_second, ineq)
     @test cell2.volume == 2
     @test cell == THC.exchange_column(cell2, THC.exchange_second, ind_back)
 
-    ind_back = reverse(ineq, cell, THC.exchange_first)
+    ind_back = THC.reverse_index(ineq, cell, THC.exchange_first)
     cell2 = THC.exchange_column(cell, THC.exchange_first, ineq)
     @test cell2.volume == 1
     @test cell == THC.exchange_column(cell2, THC.exchange_first, ind_back)
