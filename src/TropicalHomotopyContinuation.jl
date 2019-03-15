@@ -284,24 +284,31 @@ end
 function circuit_table(mixed_cell_indices, cayley::Matrix{I}, indexing::CayleyIndexing) where {I}
     D = mixed_cell_submatrix(cayley, indexing, mixed_cell_indices)
     n, m = nconfigurations(indexing), ncolumns(indexing)
-    volume = round(Int, abs(LinearAlgebra.det(D)))
-
+    lu = LinearAlgebra.lu(D)
+    volume = round(Int, abs(LinearAlgebra.det(lu)))
+    x = zeros(2n)
+    y, b, b̂ = zeros(Int, 2n), zeros(Int, 2n), zeros(Int, 2n)
     # We need to compute the initial circuits from scratch
     table = zeros(I, m, n)
-    D⁻¹ = LinearAlgebra.inv(D)
+    D⁻¹ = LinearAlgebra.inv(lu)
     for ind in indexing
         aᵢ, bᵢ = mixed_cell_indices[ind.config_index]
         # we can ignore columns corresponding to the support of the mixed cell
         (ind.col_index == aᵢ || ind.col_index == bᵢ) && continue
 
         # compute a circuit
-        x = D⁻¹ * (@view cayley[:, ind.cayley_index])
+        b .= cayley[:, ind.cayley_index]
+        LinearAlgebra.mul!(x, D⁻¹, b)
         x .*= volume
+        y .= round.(Int, x)
+        # verify that we have a correct circuit
+        LinearAlgebra.mul!(b̂, D, y)
+        b .*= volume
+        b == b̂ || error("Cannot construct initial circuit table.") # this should increase precision or similar
 
         # we pick every second entry of x
         for (k, l) in enumerate(1:2:2n)
-            # @show k l
-            table[ind.cayley_index, k] = round(Int, x[l])
+            table[ind.cayley_index, k] = y[l]
         end
     end
 
