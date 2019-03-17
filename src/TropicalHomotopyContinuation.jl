@@ -273,7 +273,7 @@ function MixedCell(indices, cayley::Matrix{I}, indexing::CayleyIndexing; fill_ci
     if fill_circuit_table
         volume = fill_circuit_table!(table, indices, cayley, indexing)
     else
-        volume = 0
+        volume = zero(I)
     end
     rotated_column = [zero(eltype(cayley)) for _ in indexing]
     rotated_in_ineq = table[1,:]
@@ -297,9 +297,9 @@ function fill_circuit_table!(table, mixed_cell_indices, cayley::Matrix{I}, index
     D = mixed_cell_submatrix(cayley, indexing, mixed_cell_indices)
     n, m = nconfigurations(indexing), ncolumns(indexing)
     lu = LinearAlgebra.lu(D)
-    volume = round(Int, abs(LinearAlgebra.det(lu)))
+    volume = round(I, abs(LinearAlgebra.det(lu)))
     x = zeros(2n)
-    y, b, b̂ = zeros(Int, 2n), zeros(Int, 2n), zeros(Int, 2n)
+    y, b, b̂ = zeros(I, 2n), zeros(I, 2n), zeros(I, 2n)
     # We need to compute the initial circuits from scratch
     D⁻¹ = LinearAlgebra.inv(lu)
     for ind in indexing
@@ -311,7 +311,7 @@ function fill_circuit_table!(table, mixed_cell_indices, cayley::Matrix{I}, index
         b .= cayley[:, ind.cayley_index]
         LinearAlgebra.mul!(x, D⁻¹, b)
         x .*= volume
-        y .= round.(Int, x)
+        y .= round.(I, x)
         # verify that we have a correct circuit
         LinearAlgebra.mul!(b̂, D, y)
         b .*= volume
