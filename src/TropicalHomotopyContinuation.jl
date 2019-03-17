@@ -273,7 +273,7 @@ function MixedCell(indices, cayley::Matrix{I}, indexing::CayleyIndexing; fill_ci
     if fill_circuit_table
         volume = fill_circuit_table!(table, indices, cayley, indexing)
     else
-        volume = 0
+        volume = zero(I)
     end
     rotated_column = [zero(eltype(cayley)) for _ in indexing]
     rotated_in_ineq = table[1,:]
