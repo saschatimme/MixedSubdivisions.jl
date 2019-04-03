@@ -607,8 +607,11 @@ function exchange_column!(cell::MixedCell, exchange::Exchange, ineq::CayleyIndex
     end
 
     vol⁻¹ = MuliplicativeInverse(flipsign(cell.volume, d))
-    for i in 1:n, k in 1:m
-        table[k, i] = div(d * table[k, i] + rotated_column[k] * rotated_in_ineq[i], vol⁻¹)
+    for i in 1:n
+        rᵢ = rotated_in_ineq[i] # we need to manual hoist this out of the loop
+        for k in 1:m
+            table[k, i] = div(d * table[k, i] + rᵢ * rotated_column[k], vol⁻¹)
+        end
     end
 
     #  the violated ineq is now an ineq at the old index
