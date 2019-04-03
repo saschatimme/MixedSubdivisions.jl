@@ -940,7 +940,7 @@ function enumerate_mixed_cells(f, As, weights)
     start_mixed_cell, τ = total_degree_homotopy_start(As)
     start_traverser = MixedCellTraverser(start_mixed_cell, τ)
 
-    target_cell = unitiliazed_mixed_cell(As)
+    target_cell = uninitialized_mixed_cell(As)
     target_weights = copy(weights[1])
     for i = 2:length(weights)
         append!(target_weights, weights[i])
@@ -963,7 +963,7 @@ function enumerate_mixed_cells(f, As, weights)
 end
 
 "Create a mixed cell filled with dummy data."
-function unitiliazed_mixed_cell(As)
+function uninitialized_mixed_cell(As)
     indices = map(_ -> (1,2), As)
     indexing = CayleyIndexing(size.(As, 2))
     MixedCell(indices, cayley(As), indexing; fill_circuit_table=false)
