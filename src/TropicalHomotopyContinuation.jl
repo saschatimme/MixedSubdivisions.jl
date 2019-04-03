@@ -415,16 +415,21 @@ function compute_inequality_dots!(cell::MixedCell, τ)
 
     @inbounds for i in 1:n
         aᵢ, bᵢ = cell.indices[i]
-        τ_aᵢ =  τ[cell.indexing[i, aᵢ]]
-        τ_bᵢ = -τ[cell.indexing[i, bᵢ]]
+        τ_aᵢ = τ[cell.indexing[i, aᵢ]]
+        τ_bᵢ = τ[cell.indexing[i, bᵢ]]
+        τᵢ = τ_aᵢ - τ_bᵢ
 
-        for k in 1:m
-            c₁ = cell.circuit_table[k, i]
-            result[k] += c₁ * τ_aᵢ
-            result[k] += c₁ * τ_bᵢ
+        if !iszero(τᵢ)
+            for k in 1:m
+                result[k] += cell.circuit_table[k, i] * τᵢ
+            end
         end
-        for k in configuration(cell.indexing, i)
-            result[k] -= cell.volume * τ_bᵢ
+
+        v_τ_bᵢ = cell.volume * τ_bᵢ
+        if !iszero(v_τ_bᵢ)
+            for k in configuration(cell.indexing, i)
+                result[k] += v_τ_bᵢ
+            end
         end
     end
 
@@ -910,13 +915,13 @@ function mixed_volume(As)
     total_degree_homotopy(mv, As)
     mv.volume
 end
-function mixed_volume(F::Vector{<:MP.AbstractPolynomialLike})
-    mixed_volume(support(F))
+function mixed_volume(F::Vector{<:MP.AbstractPolynomialLike}, T::Type{<:Integer}=Int)
+    mixed_volume(support(F, MP.variables(F), T))
 end
 
-function support(F::Vector{<:MP.AbstractPolynomialLike}, variables=MP.variables(F))
+function support(F::Vector{<:MP.AbstractPolynomialLike}, variables=MP.variables(F), T::Type{<:Integer}=Int)
     map(F) do f
-        [MP.degree(t, v) for v in variables, t in MP.terms(f)]
+        T[convert(T, MP.degree(t, v)) for v in variables, t in MP.terms(f)]
     end
 end
 
