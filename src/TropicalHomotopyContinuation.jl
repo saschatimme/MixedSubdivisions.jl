@@ -135,17 +135,20 @@ in the cayley configuration.
 Supports indexing with a configuration and column index.
 """
 struct CayleyIndexing
-    configuration_sizes::Vector{Int}
-    ncolumns::Int # = sum(configuration_sizes)
-    nconfigurations::Int
-    offsets::Vector{Int}
+    configuration_sizes::Vector{Int32}
+    ncolumns::Int32 # = sum(configuration_sizes)
+    nconfigurations::Int32
+    offsets::Vector{Int32}
 end
-function CayleyIndexing(configuration_sizes::Vector{Int})
+function CayleyIndexing(configuration_sizes::Vector{<:Integer})
+    CayleyIndexing(convert(Vector{Int32}, configuration_sizes))
+end
+function CayleyIndexing(configuration_sizes::Vector{Int32})
     ncolumns = sum(configuration_sizes)
-    nconfigurations = length(configuration_sizes)
-    offsets = [0]
-    for i in 1:nconfigurations - 1
-    push!(offsets, offsets[i] + configuration_sizes[i])
+    nconfigurations = Int32(length(configuration_sizes))
+    offsets = [zero(Int32)]
+    for i in Int32(1):nconfigurations - Int32(1)
+        push!(offsets, offsets[i] + configuration_sizes[i])
     end
     CayleyIndexing(configuration_sizes, ncolumns, nconfigurations, offsets)
 end
@@ -231,12 +234,12 @@ end
 
 
 """
-mutable struct MixedCell{I<:Integer}
+mutable struct MixedCell{LowInt<:Integer, HighInt<:Integer}
     # A mixed cell is defined by two vectors our of each configuration.
     # We assume that each point is in ℤⁿ and the i-th configuration has mᵢ points.
     # Therefore, the Cayley configuration has ∑ mᵢ =: m columns and 2n rows.
     # We store the indices of the columns.
-    indices::Vector{NTuple{2,Int}}
+    indices::Vector{NTuple{2, Int32}}
 
     # The mixed cell cone of a mixed cell is the set of all weight vectors ω such that
     # this mixed cell is a mixed cell of the induced subdivision.
@@ -257,34 +260,39 @@ mutable struct MixedCell{I<:Integer}
     # has as value -volume(mixed cell) and the sum of all three needs to add to 0.
     # So if we store the volume, we only need to store on other entry.
     # So as a result it is suffcient to everything in a m × n matrix
-    circuit_table::Matrix{I}
-    volume::I
+    circuit_table::Matrix{LowInt}
+    volume::LowInt
 
     indexing::CayleyIndexing # we store these duplicates
 
     # caches
-    rotated_column::Vector{I}
-    rotated_in_ineq::Vector{I}
-    dot::Vector{I}
+    rotated_column::Vector{LowInt}
+    rotated_in_ineq::Vector{LowInt}
+    intermediate_dot::Vector{HighInt}
+    dot::Vector{LowInt}
 end
 
-function MixedCell(indices, cayley::Matrix{I}, indexing::CayleyIndexing; fill_circuit_table::Bool=true) where {I}
-    table = zeros(I, ncolumns(indexing), nconfigurations(indexing))
+function MixedCell(indices, cayley::Matrix, indexing::CayleyIndexing, ::Type{LowInt}=Int32; fill_circuit_table::Bool=true) where {LowInt}
+    HighInt = widen(LowInt)
+
+    circuit_table = zeros(LowInt, ncolumns(indexing), nconfigurations(indexing))
     if fill_circuit_table
-        volume = fill_circuit_table!(table, indices, cayley, indexing)
+        volume = fill_circuit_table!(circuit_table, indices, cayley, indexing)
     else
-        volume = zero(I)
+        volume = zero(LowInt)
     end
-    rotated_column = [zero(eltype(cayley)) for _ in indexing]
-    rotated_in_ineq = table[1,:]
-    dot = table[:, 1]
-    MixedCell(indices, table, volume, indexing, rotated_column, rotated_in_ineq, dot)
+    rotated_column = [zero(LowInt) for _ in indexing]
+    rotated_in_ineq = zeros(LowInt, size(circuit_table, 2))
+    intermediate_dot = zeros(HighInt, size(circuit_table, 1))
+    dot = zeros(LowInt, size(circuit_table, 1))
+    indices32 = convert(Vector{NTuple{2,Int32}}, indices)
+    MixedCell(indices32, circuit_table, volume, indexing, rotated_column, rotated_in_ineq, intermediate_dot, dot)
 end
 
 function Base.copy(M::MixedCell)
     MixedCell(copy(M.indices), copy(M.circuit_table), copy(M.volume),
               copy(M.indexing), copy(M.rotated_column), copy(M.rotated_in_ineq),
-      copy(M.dot))
+              copy(M.intermediate_dot), copy(M.dot))
 end
 
 function Base.:(==)(M₁::MixedCell, M₂::MixedCell)
@@ -293,7 +301,7 @@ function Base.:(==)(M₁::MixedCell, M₂::MixedCell)
     M₁.circuit_table == M₂.circuit_table
 end
 
-function fill_circuit_table!(table, mixed_cell_indices, cayley::Matrix{I}, indexing::CayleyIndexing) where {I}
+function fill_circuit_table!(table::Matrix{I}, mixed_cell_indices, cayley::Matrix, indexing::CayleyIndexing) where {I}
     D = mixed_cell_submatrix(cayley, indexing, mixed_cell_indices)
     n, m = nconfigurations(indexing), ncolumns(indexing)
     lu = LinearAlgebra.lu(D)
@@ -348,20 +356,20 @@ Base.@propagate_inbounds function is_valid_inquality(M::MixedCell, I::CayleyInde
 end
 
 """
-    circuit_first(cell::MixedCell, ineq::CayleyIndex, configuration::Int)
+    circuit_first(cell::MixedCell, ineq::CayleyIndex, configuration::Integer)
 
 Return the first entry of the circuit corresponding to the given configuration.
 """
-Base.@propagate_inbounds function circuit_first(cell::MixedCell, ineq::CayleyIndex, i)
+Base.@propagate_inbounds function circuit_first(cell::MixedCell, ineq::CayleyIndex, i::Integer)
     cell.circuit_table[ineq.cayley_index, i]
 end
 
 """
-    circuit_second(cell::MixedCell, ineq::CayleyIndex, configuration::Int)
+    circuit_second(cell::MixedCell, ineq::CayleyIndex, configuration::Integer)
 
 Return the second entry of the circuit corresponding to the given configuration.
 """
-Base.@propagate_inbounds function circuit_second(cell::MixedCell, ineq::CayleyIndex, i)
+Base.@propagate_inbounds function circuit_second(cell::MixedCell, ineq::CayleyIndex, i::Integer)
     if i == ineq.config_index
         cell.volume - cell.circuit_table[ineq.cayley_index, i]
     else
@@ -378,7 +386,7 @@ Get the coordinate given by `coord` of the mixed cell cone inequality given by `
 function inequality_coordinate(cell::MixedCell, ineq::CayleyIndex, coord::CayleyIndex)
     inequality_coordinate(cell, ineq, coord.config_index, coord.col_index)
 end
-function inequality_coordinate(cell::MixedCell, ineq::CayleyIndex, i::Int, j::Int)
+function inequality_coordinate(cell::MixedCell, ineq::CayleyIndex, i::Integer, j::Integer)
     aᵢ, bᵢ = cell.indices[i]
 
     if i == ineq.config_index && j == ineq.col_index
@@ -405,42 +413,71 @@ end
 
 Compute the dot product of all inequalities with `τ` and store in `result`.
 """
-function compute_inequality_dots!(cell::MixedCell, τ)
-    result = cell.dot
+function compute_inequality_dots!(cell::MixedCell{LowInt,HighInt}, τ) where {LowInt, HighInt}
+    intermediate_result = cell.intermediate_dot
     n, m = nconfigurations(cell.indexing), ncolumns(cell.indexing)
 
+    # We do the accumulation in a higher precision in order to catch overflows.
     @inbounds for k in 1:m
-        result[k] = -cell.volume * τ[k]
+        intermediate_result[k] = -cell.volume * HighInt(τ[k])
     end
 
     @inbounds for i in 1:n
         aᵢ, bᵢ = cell.indices[i]
         τ_aᵢ = τ[cell.indexing[i, aᵢ]]
         τ_bᵢ = τ[cell.indexing[i, bᵢ]]
-        τᵢ = τ_aᵢ - τ_bᵢ
+        τᵢ = HighInt(τ_aᵢ - τ_bᵢ)
 
         if !iszero(τᵢ)
             for k in 1:m
-                result[k] += cell.circuit_table[k, i] * τᵢ
+                intermediate_result[k] += cell.circuit_table[k, i] * τᵢ
             end
         end
 
-        v_τ_bᵢ = cell.volume * τ_bᵢ
+        v_τ_bᵢ = cell.volume * HighInt(τ_bᵢ)
         if !iszero(v_τ_bᵢ)
             for k in configuration(cell.indexing, i)
-                result[k] += v_τ_bᵢ
+                intermediate_result[k] += v_τ_bᵢ
             end
         end
     end
 
- 	# Correct our result for the bad indices
+ 	# Correct our intermediate_result for the bad indices
     @inbounds for i in 1:n
         aᵢ, bᵢ = cell.indices[i]
-        result[cell.indexing[i, aᵢ]] = zero(eltype(result))
-        result[cell.indexing[i, bᵢ]] = zero(eltype(result))
+        intermediate_result[cell.indexing[i, aᵢ]] = zero(HighInt)
+        intermediate_result[cell.indexing[i, bᵢ]] = zero(HighInt)
+    end
+
+    # Assign final result. Throws an InexactError in case of an overflow
+    @inbounds for k in 1:m
+        cell.dot[k] = intermediate_result[k]
     end
 
     cell
+end
+
+"""
+    inequality_dot(cell::MixedCell, ineq::CayleyIndex, τ)
+Compute the dot product of the given inequality with `τ`.
+"""
+function inequality_dot(cell::MixedCell{LowInt, HighInt}, ineq::CayleyIndex, τ) where {LowInt, HighInt}
+    dot = -cell.volume * HighInt(τ[ineq.cayley_index])
+    @inbounds for i in 1:length(cell.indices)
+        aᵢ, bᵢ = cell.indices[i]
+        τ_aᵢ, τ_bᵢ = τ[cell.indexing[i, aᵢ]], τ[cell.indexing[i, bᵢ]]
+        τᵢ = HighInt(τ_aᵢ - τ_bᵢ)
+
+        if !iszero(τᵢ)
+            dot += cell.circuit_table[ineq.cayley_index, i] * τᵢ
+        end
+
+        if i == ineq.col_index
+            dot += cell.volume * HighInt(τ_bᵢ)
+        end
+    end
+
+    LowInt(dot)
 end
 
 """
@@ -449,10 +486,10 @@ end
 Compute the first violated inequality in the given mixed cell with respect to the given
 term ordering and the target weight vector `τ`.
 """
-function first_violated_inequality(mixed_cell::MixedCell{In}, τ::Vector{In}, ord::TermOrdering) where {In}
+function first_violated_inequality(mixed_cell::MixedCell{LowInt}, τ::Vector, ord::TermOrdering) where {LowInt}
     empty = true
     best_index = first(mixed_cell.indexing)
-    best_dot = zero(In)
+    best_dot = zero(LowInt)
 
     compute_inequality_dots!(mixed_cell, τ)
     @inbounds for I in mixed_cell.indexing
@@ -483,13 +520,13 @@ function circuit_less(cell::MixedCell, ind₁::CayleyIndex, λ₁, ind₂::Cayle
     a == b ? circuit_less(cell, ind₁, λ₁, ind₂, λ₂, ord.tiebraker) : a < b
 end
 
-function circuit_less(cell::MixedCell, ind₁::CayleyIndex, λ₁, ind₂::CayleyIndex, λ₂, ord::LexicographicOrdering)
+function circuit_less(cell::MixedCell{LowInt, HighInt}, ind₁::CayleyIndex, λ₁, ind₂::CayleyIndex, λ₂, ord::LexicographicOrdering) where {LowInt, HighInt}
     @inbounds for i in 1:length(cell.indices)
         aᵢ, bᵢ = cell.indices[i]
         # Optimize for the common case
         if i ≠ ind₁.config_index && i ≠ ind₂.config_index
-            c₁_aᵢ = cell.circuit_table[ind₁.cayley_index, i]
-            c₂_aᵢ = cell.circuit_table[ind₂.cayley_index, i]
+            c₁_aᵢ = HighInt(cell.circuit_table[ind₁.cayley_index, i])
+            c₂_aᵢ = HighInt(cell.circuit_table[ind₂.cayley_index, i])
             λc₁, λc₂ = λ₁ * c₁_aᵢ, λ₂ * c₂_aᵢ
             if λc₁ ≠ λc₂
                 # we have c₁_aᵢ=-c₁_bᵢ and c₂_aᵢ =-c₂_bᵢ
@@ -518,7 +555,7 @@ function circuit_less(cell::MixedCell, ind₁::CayleyIndex, λ₁, ind₂::Cayle
         for k in 1:n
             j = sorted[k]
             c₁, c₂ = inequality_coordinates(cell, ind₁, ind₂, i, j)
-            λc₁, λc₂ = λ₁ * c₁, λ₂ * c₂
+            λc₁, λc₂ = λ₁ * HighInt(c₁), λ₂ * HighInt(c₂)
 
             if λc₁ < λc₂
                 return true
@@ -740,15 +777,15 @@ function reverse_exchange_column!(cell::MixedCell, v::SearchTreeVertex)
     exchange_column!(cell, v.exchange, v.reverse_index)
 end
 
-mutable struct MixedCellTraverser{I, Ord<:TermOrdering}
-    mixed_cell::MixedCell{I}
-    target::Vector{I}
+mutable struct MixedCellTraverser{LowInt, HighInt, Ord<:TermOrdering}
+    mixed_cell::MixedCell{LowInt, HighInt}
+    target::Vector{LowInt}
     ord::Ord
     search_tree::Vector{SearchTreeVertex}
 end
 
-function MixedCellTraverser(mixed_cell::MixedCell, target, ord=LexicographicOrdering())
-    MixedCellTraverser(mixed_cell, target, ord, SearchTreeVertex[])
+function MixedCellTraverser(mixed_cell::MixedCell{LowInt}, target, ord=LexicographicOrdering()) where {LowInt}
+    MixedCellTraverser(mixed_cell, convert(Vector{LowInt}, target), ord, SearchTreeVertex[])
 end
 
 function add_vertex!(search_tree, cell, ineq)
