@@ -123,10 +123,10 @@ Fields:
 * `cayley_index::Int`
 """
 struct CayleyIndex
-    config_index::Int
-    col_index::Int
-    offset::Int
-    cayley_index::Int
+    config_index::Int32
+    col_index::Int32
+    offset::Int32
+    cayley_index::Int32
 end
 CayleyIndex(i, j, offset) = CayleyIndex(i, j, offset, offset + j)
 
@@ -216,7 +216,7 @@ Base.@propagate_inbounds Base.getindex(CI::CayleyIndexing, i, j) = CI.offsets[i]
 
 # iteration protocol
 Base.length(C::CayleyIndexing) = C.ncolumns
-Base.eltype(C::Type{CayleyIndexing}) = NTuple{3, Int}
+Base.eltype(C::Type{CayleyIndexing}) = CayleyIndex
 function Base.iterate(CI::CayleyIndexing)
     i = j = Int32(1)
     @inbounds mᵢ = CI.configuration_sizes[i]
@@ -519,7 +519,7 @@ function first_violated_inequality(mixed_cell::MixedCell{LowInt}, τ::Vector, or
     @inbounds for I in mixed_cell.indexing
         dot_I = mixed_cell.dot[I.cayley_index]
         if dot_I < 0
-            # TODO: Can we avoid this check sometimes?
+            # TODO: Can we avoid this check sometimes? Yes if we have lex order
             if empty || circuit_less(mixed_cell, best_index, dot_I, I, best_dot, ord)
                 empty = false
                 best_index = I
@@ -538,13 +538,13 @@ end
 
 Decicdes whether `λ₁c[ind₁] ≺ λ₂c[ind₂]` where ≺ is the ordering given by `ord`.
 """
-function circuit_less(cell::MixedCell, ind₁::CayleyIndex, λ₁, ind₂::CayleyIndex, λ₂, ord::DotOrdering)
+@inline function circuit_less(cell::MixedCell, ind₁::CayleyIndex, λ₁, ind₂::CayleyIndex, λ₂, ord::DotOrdering)
     a = λ₁ * inequality_dot(cell, ind₁, ord.w)
     b = λ₂ * inequality_dot(cell, ind₂, ord.w)
     a == b ? circuit_less(cell, ind₁, λ₁, ind₂, λ₂, ord.tiebraker) : a < b
 end
 
-function circuit_less(cell::MixedCell{LowInt, HighInt}, ind₁::CayleyIndex, λ₁, ind₂::CayleyIndex, λ₂, ord::LexicographicOrdering) where {LowInt, HighInt}
+@inline function circuit_less(cell::MixedCell{LowInt, HighInt}, ind₁::CayleyIndex, λ₁, ind₂::CayleyIndex, λ₂, ord::LexicographicOrdering) where {LowInt, HighInt}
     @inbounds for i in 1:length(cell.indices)
         aᵢ, bᵢ = cell.indices[i]
         # Optimize for the common case
@@ -729,7 +729,7 @@ Base.@propagate_inbounds function circuit(cell::MixedCell, exchange::Exchange, i
     end
 end
 
-function table_update!(cell::MixedCell{Int32}, d, rc_index::Int)
+@inline function table_update!(cell::MixedCell{Int32}, d, rc_index::Integer)
     rotated_column, rotated_in_ineq = cell.rotated_column, cell.rotated_in_ineq
     table, table_col_bound = cell.circuit_table, cell.table_col_bound
 
