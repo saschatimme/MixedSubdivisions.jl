@@ -27,7 +27,7 @@ using Test
 
     mixed_cell_indices = [(2, 3), (1, 3)]
     indexing = THC.CayleyIndexing(size.((A₁, A₂), 2))
-    ord = THC.DotOrdering(w)
+    ord = THC.DotOrdering(Int32.(w))
     cell = MixedCell(mixed_cell_indices, A, indexing)
     @test cell.volume == 3
     @test cell.circuit_table == [1 2; 0 0; 0 0; 1 -1; 0 0; 1 2; 0 0; -2 -1]
@@ -50,5 +50,7 @@ using Test
 
 	@test mixed_volume(equations(cyclic(5))) == 70
 	@test mixed_volume(equations(cyclic(7))) == 924
+	@test mixed_volume(equations(cyclic(10))) == 35940
+	@test mixed_volume(equations(cyclic(11))) == 184756
 	@test mixed_volume(equations(ipp2())) == 288
 end
