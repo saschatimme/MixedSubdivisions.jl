@@ -510,12 +510,12 @@ end
 Compute the first violated inequality in the given mixed cell with respect to the given
 term ordering and the target weight vector `τ`.
 """
-function first_violated_inequality(mixed_cell::MixedCell{LowInt}, τ::Vector, ord::TermOrdering) where {LowInt}
+function first_violated_inequality(mixed_cell::MixedCell{LowInt}, τ::Vector, ord::TermOrdering, τ_bound=typemax(LowInt)) where {LowInt}
     empty = true
     best_index = first(mixed_cell.indexing)
     best_dot = zero(LowInt)
 
-    compute_inequality_dots!(mixed_cell, τ)
+    compute_inequality_dots!(mixed_cell, τ, τ_bound)
     @inbounds for I in mixed_cell.indexing
         dot_I = mixed_cell.dot[I.cayley_index]
         if dot_I < 0
@@ -862,12 +862,15 @@ end
 mutable struct MixedCellTraverser{LowInt, HighInt, Ord<:TermOrdering}
     mixed_cell::MixedCell{LowInt, HighInt}
     target::Vector{LowInt}
+    target_bound::LowInt
     ord::Ord
     search_tree::Vector{SearchTreeVertex}
 end
 
 function MixedCellTraverser(mixed_cell::MixedCell{LowInt}, target, ord=LexicographicOrdering()) where {LowInt}
-    MixedCellTraverser(mixed_cell, convert(Vector{LowInt}, target), ord, SearchTreeVertex[])
+    τ = convert(Vector{LowInt}, target)
+    τ_bound = abs(maximum(abs, τ))
+    MixedCellTraverser(mixed_cell, τ, τ_bound, ord, SearchTreeVertex[])
 end
 
 function add_vertex!(search_tree, cell, ineq)
@@ -889,8 +892,8 @@ end
 
 function traverse(f, traverser::MixedCellTraverser)
     cell, search_tree = traverser.mixed_cell, traverser.search_tree
-    τ, ord = traverser.target, traverser.ord
-    ineq = first_violated_inequality(cell, τ, ord)
+    τ, τ_bound, ord = traverser.target, traverser.target_bound, traverser.ord
+    ineq = first_violated_inequality(cell, τ, ord, τ_bound)
     # Handle case that we have nothing to do
     if ineq === nothing
         f(cell)
@@ -913,7 +916,7 @@ function traverse(f, traverser::MixedCellTraverser)
         else
             exchange_column!(cell, v)
 
-            ineq = first_violated_inequality(cell, τ, ord)
+            ineq = first_violated_inequality(cell, τ, ord, τ_bound)
             if ineq === nothing
                 f(cell)
                 search_tree[end] = back(search_tree[end])
