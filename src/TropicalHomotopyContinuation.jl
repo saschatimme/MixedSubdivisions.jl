@@ -876,18 +876,29 @@ function add_vertex!(search_tree, cell, ineq)
     true
 end
 
+Base.IteratorSize(::Type{<:MixedCellTraverser}) = Base.SizeUnknown()
+Base.IteratorEltype(::Type{<:MixedCellTraverser}) = Base.HasEltype()
+Base.eltype(::Type{MixedCellTraverser{L,H,O}}) where {L,H,O} = MixedCell{L,H}
 
-function traverse(f, traverser::MixedCellTraverser)
+function Base.iterate(traverser::MixedCellTraverser)
     cell, search_tree = traverser.mixed_cell, traverser.search_tree
     τ, τ_bound, ord = traverser.target, traverser.target_bound, traverser.ord
+
     ineq = first_violated_inequality(cell, τ, ord, τ_bound)
     # Handle case that we have nothing to do
     if ineq === nothing
-        f(cell)
-        return nothing
+        return cell, true
     else
         add_vertex!(search_tree, cell, ineq)
     end
+    iterate(traverser, false)
+end
+
+function Base.iterate(traverser::MixedCellTraverser, complete::Bool)
+    !complete || return nothing
+
+    cell, search_tree = traverser.mixed_cell, traverser.search_tree
+    τ, τ_bound, ord = traverser.target, traverser.target_bound, traverser.ord
 
     while !isempty(search_tree)
         v = search_tree[end]
@@ -905,8 +916,8 @@ function traverse(f, traverser::MixedCellTraverser)
 
             ineq = first_violated_inequality(cell, τ, ord, τ_bound)
             if ineq === nothing
-                f(cell)
                 search_tree[end] = back(search_tree[end])
+                return cell, false
             else
                 vertex_added = add_vertex!(search_tree, cell, ineq)
                 if !vertex_added
@@ -918,21 +929,18 @@ function traverse(f, traverser::MixedCellTraverser)
     nothing
 end
 
-
-total_degree_homotopy(f, Aᵢ...) = total_degree_homotopy(f, Aᵢ)
-
-function degree(A::Matrix)
-    d = zero(eltype(A))
-    for j in 1:size(A,2)
-        c = A[1, j]
-        for i in 2:size(A,1)
-            c += A[i,j]
-        end
-        d = max(d, c)
+function traverse(f, traverser::MixedCellTraverser)
+    for cell in traverser
+        f(cell)
     end
-    d
+    nothing
 end
 
+#########################
+# Total Degree Homotopy #
+#########################
+
+total_degree_homotopy(f, Aᵢ...) = total_degree_homotopy(f, Aᵢ)
 
 struct TotalDegreeCallback{F}
     f::F
@@ -958,24 +966,6 @@ function total_degree_homotopy(f, As)
     traverser = MixedCellTraverser(mixed_cell, τ, LexicographicOrdering())
     traverse(TotalDegreeCallback(f), traverser)
 end
-
-function shift_indices!(indices)
-    n = length(indices)
-    @inbounds for i in 1:n
-        aᵢ, bᵢ = indices[i]
-        indices[i] = (aᵢ - (n + 1), bᵢ - (n + 1))
-    end
-    indices
-end
-function unshift_indices!(indices)
-    n = length(indices)
-    @inbounds for i in 1:n
-        aᵢ, bᵢ = indices[i]
-        indices[i] = (aᵢ + n + 1, bᵢ + n + 1)
-    end
-    indices
-end
-
 
 function total_degree_homotopy_start(As)
     n = size(As[1], 1)
@@ -1005,6 +995,9 @@ function total_degree_homotopy_start(As)
     mixed_cell, τ
 end
 
+################
+# Mixed Volume #
+################
 mutable struct MixedVolumeCounter{T}
     volume::T
 end
@@ -1036,6 +1029,36 @@ function support(F::Vector{<:MP.AbstractPolynomialLike}, variables=MP.variables(
         T[convert(T, MP.degree(t, v)) for v in variables, t in MP.terms(f)]
     end
 end
+
+function degree(A::Matrix)
+    d = zero(eltype(A))
+    for j in 1:size(A,2)
+        c = A[1, j]
+        for i in 2:size(A,1)
+            c += A[i,j]
+        end
+        d = max(d, c)
+    end
+    d
+end
+
+function shift_indices!(indices)
+    n = length(indices)
+    @inbounds for i in 1:n
+        aᵢ, bᵢ = indices[i]
+        indices[i] = (aᵢ - (n + 1), bᵢ - (n + 1))
+    end
+    indices
+end
+function unshift_indices!(indices)
+    n = length(indices)
+    @inbounds for i in 1:n
+        aᵢ, bᵢ = indices[i]
+        indices[i] = (aᵢ + n + 1, bᵢ + n + 1)
+    end
+    indices
+end
+
 
 """
     enumerate_mixed_cells(f, As, weights)
