@@ -30,7 +30,7 @@ using Test
     ord = THC.DotOrdering(Int32.(w))
     cell = MixedCell(mixed_cell_indices, A, indexing)
     @test cell.volume == 3
-    @test cell.circuit_table == [1 2; 0 0; 0 0; 1 -1; 0 0; 1 2; 0 0; -2 -1]
+    @test cell.circuit_table == [1 2; 3 0; 0 0; 1 -1; 0 3; 1 2; 0 0; -2 -1]
     ineq = THC.first_violated_inequality(cell, v, ord)
     @test ineq.config_index == 1
     @test ineq.col_index == 4

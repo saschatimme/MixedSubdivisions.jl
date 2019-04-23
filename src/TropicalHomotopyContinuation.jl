@@ -325,10 +325,6 @@ function fill_circuit_table!(table::Matrix{I}, mixed_cell_indices, cayley::Matri
     # We need to compute the initial circuits from scratch
     D⁻¹ = LinearAlgebra.inv(lu)
     for ind in indexing
-        aᵢ, bᵢ = mixed_cell_indices[ind.config_index]
-        # we can ignore columns corresponding to the support of the mixed cell
-        (ind.col_index == aᵢ || ind.col_index == bᵢ) && continue
-
         # compute a circuit
         b .= cayley[:, ind.cayley_index]
         LinearAlgebra.mul!(x, D⁻¹, b)
@@ -695,15 +691,6 @@ function exchange_column!(cell::MixedCell, exchange::Exchange, ineq::CayleyIndex
         end
     end
 
-    # clear table for ineqs corresponding to mixed cell columns
-    for j in 1:n
-        aⱼ, bⱼ = cell.indices[j]
-        off = offset(cell.indexing, j)
-        for k in 1:n
-            table[aⱼ + off, k] = zero(eltype(table))
-        	table[bⱼ + off, k] = zero(eltype(table))
-        end
-    end
     end # end inbounds
 
     cell
