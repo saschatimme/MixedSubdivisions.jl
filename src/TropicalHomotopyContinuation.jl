@@ -1,10 +1,11 @@
 module TropicalHomotopyContinuation
 
-export MixedCell, TermOrdering, cayley, MixedCellTraverser, mixed_volume
+export MixedCell, TermOrdering, DotOrdering, LexicographicOrdering,
+        cayley,
+        mixed_volume, enumerate_mixed_cells
 
 import MultivariatePolynomials
 const MP = MultivariatePolynomials
-
 import LinearAlgebra
 
 import Base: checked_add, checked_sub
@@ -514,7 +515,7 @@ function first_violated_inequality(mixed_cell::MixedCell{LowInt}, τ::Vector, or
     compute_inequality_dots!(mixed_cell, τ, τ_bound)
     @inbounds for I in mixed_cell.indexing
         dot_I = mixed_cell.dot[I.cayley_index]
-        if dot_I < 0
+        if dot_I < 0 # && is_valid_inquality(mixed_cell, I)
             # TODO: Can we avoid this check sometimes? Yes if we have lex order
             if empty || circuit_less(mixed_cell, best_index, dot_I, I, best_dot, ord)
                 empty = false
@@ -776,6 +777,10 @@ end
     table
 end
 
+##############
+# TRAVERSERS #
+##############
+abstract type AbstractTraverser end
 
 #######################
 # Mixed Cell Traverser
@@ -846,18 +851,21 @@ function reverse_exchange_column!(cell::MixedCell, v::SearchTreeVertex)
     exchange_column!(cell, v.exchange, v.reverse_index)
 end
 
-mutable struct MixedCellTraverser{LowInt, HighInt, Ord<:TermOrdering}
+mutable struct MixedCellTraverser{LowInt, HighInt, Ord<:TermOrdering} <: AbstractTraverser
     mixed_cell::MixedCell{LowInt, HighInt}
+    cayley::Matrix{LowInt}
     target::Vector{LowInt}
     target_bound::LowInt
     ord::Ord
     search_tree::Vector{SearchTreeVertex}
+    started::Bool
 end
 
-function MixedCellTraverser(mixed_cell::MixedCell{LowInt}, target, ord=LexicographicOrdering()) where {LowInt}
+function MixedCellTraverser(mixed_cell::MixedCell{LowInt}, cayley::Matrix, target, ord=LexicographicOrdering()) where {LowInt}
     τ = convert(Vector{LowInt}, target)
     τ_bound = abs(maximum(abs, τ))
-    MixedCellTraverser(mixed_cell, τ, τ_bound, ord, SearchTreeVertex[])
+    A = convert(Matrix{LowInt}, cayley)
+    MixedCellTraverser(mixed_cell, A, τ, τ_bound, ord, SearchTreeVertex[], false)
 end
 
 function add_vertex!(search_tree, cell, ineq)
@@ -880,25 +888,20 @@ Base.IteratorSize(::Type{<:MixedCellTraverser}) = Base.SizeUnknown()
 Base.IteratorEltype(::Type{<:MixedCellTraverser}) = Base.HasEltype()
 Base.eltype(::Type{MixedCellTraverser{L,H,O}}) where {L,H,O} = MixedCell{L,H}
 
-function Base.iterate(traverser::MixedCellTraverser)
+@inline function Base.iterate(traverser::MixedCellTraverser, state=nothing)
     cell, search_tree = traverser.mixed_cell, traverser.search_tree
     τ, τ_bound, ord = traverser.target, traverser.target_bound, traverser.ord
 
-    ineq = first_violated_inequality(cell, τ, ord, τ_bound)
-    # Handle case that we have nothing to do
-    if ineq === nothing
-        return cell, true
-    else
-        add_vertex!(search_tree, cell, ineq)
+    if !traverser.started
+        traverser.started = true
+        ineq = first_violated_inequality(cell, τ, ord, τ_bound)
+        # Handle case that we have nothing to do
+        if ineq === nothing
+            return cell, nothing
+        else
+            add_vertex!(search_tree, cell, ineq)
+        end
     end
-    iterate(traverser, false)
-end
-
-function Base.iterate(traverser::MixedCellTraverser, complete::Bool)
-    !complete || return nothing
-
-    cell, search_tree = traverser.mixed_cell, traverser.search_tree
-    τ, τ_bound, ord = traverser.target, traverser.target_bound, traverser.ord
 
     while !isempty(search_tree)
         v = search_tree[end]
@@ -917,7 +920,7 @@ function Base.iterate(traverser::MixedCellTraverser, complete::Bool)
             ineq = first_violated_inequality(cell, τ, ord, τ_bound)
             if ineq === nothing
                 search_tree[end] = back(search_tree[end])
-                return cell, false
+                return cell, nothing
             else
                 vertex_added = add_vertex!(search_tree, cell, ineq)
                 if !vertex_added
@@ -926,6 +929,7 @@ function Base.iterate(traverser::MixedCellTraverser, complete::Bool)
             end
         end
     end
+    traverser.started = false
     nothing
 end
 
@@ -940,34 +944,11 @@ end
 # Total Degree Homotopy #
 #########################
 
-total_degree_homotopy(f, Aᵢ...) = total_degree_homotopy(f, Aᵢ)
-
-struct TotalDegreeCallback{F}
-    f::F
-end
-function (cb::TotalDegreeCallback)(cell::MixedCell)
-    n = length(cell.indices)
-    # ignore all cells where one of the artifical columns is part
-    for (aᵢ, bᵢ) in cell.indices
-        if (aᵢ ≤ n + 1 || bᵢ ≤ n + 1)
-            return nothing
-        end
-    end
-
-    # We need to substract (n+1,n+1) from each each pair
-    shift_indices!(cell.indices)
-    cb.f(cell.volume, cell.indices)
-    unshift_indices!(cell.indices)
-    nothing
+struct TotalDegreeTraverser{LowInt<:Integer, HighInt<:Integer}
+    traverser::MixedCellTraverser{LowInt, HighInt, LexicographicOrdering}
 end
 
-function total_degree_homotopy(f, As)
-    mixed_cell, τ = total_degree_homotopy_start(As)
-    traverser = MixedCellTraverser(mixed_cell, τ, LexicographicOrdering())
-    traverse(TotalDegreeCallback(f), traverser)
-end
-
-function total_degree_homotopy_start(As)
+function TotalDegreeTraverser(As::Vector{Matrix{LowInt}}) where {LowInt<:Integer}
     n = size(As[1], 1)
     L = [zeros(eltype(As[1]), n) LinearAlgebra.I]
     # construct padded cayley matrix
@@ -991,42 +972,24 @@ function total_degree_homotopy_start(As)
     cell_indices = [(i, i+1) for i in 1:n]
     indexing = CayleyIndexing(size.(As, 2) .+ (n + 1))
     mixed_cell = MixedCell(cell_indices, A, indexing)
-
-    mixed_cell, τ
+    traverser = MixedCellTraverser(mixed_cell, A, τ, LexicographicOrdering())
+    TotalDegreeTraverser(traverser)
 end
 
-################
-# Mixed Volume #
-################
-mutable struct MixedVolumeCounter{T}
-    volume::T
-end
-MixedVolumeCounter() = MixedVolumeCounter(0)
-function (MVC::MixedVolumeCounter)(vol, indices)
-    MVC.volume += vol
-end
+function traverse(f, T::TotalDegreeTraverser)
+    for cell in T.traverser
+        n = length(cell.indices)
+        # ignore all cells where one of the artifical columns is part
+        valid_cell = true
+        for (aᵢ, bᵢ) in cell.indices
+            if (aᵢ ≤ n + 1 || bᵢ ≤ n + 1)
+                valid_cell = false
+                break
+            end
+        end
+        valid_cell || continue
 
-"""
-    mixed_volume(F::Vector{<:MP.AbstractPolynomialLike})
-    mixed_volume(𝑨::Vector{<:Matrix})
-
-Compute the mixed volume of the given polynomial system `F` resp. represented
-by the support `𝑨`.
-"""
-mixed_volume(Aᵢ::Matrix...) = mixed_volume(Aᵢ)
-mixed_volume(f::MP.AbstractPolynomialLike...) = mixed_volume(f)
-function mixed_volume(As)
-    mv = MixedVolumeCounter()
-    total_degree_homotopy(mv, As)
-    mv.volume
-end
-function mixed_volume(F::Vector{<:MP.AbstractPolynomialLike}, T::Type{<:Integer}=Int)
-    mixed_volume(support(F, MP.variables(F), T))
-end
-
-function support(F::Vector{<:MP.AbstractPolynomialLike}, variables=MP.variables(F), T::Type{<:Integer}=Int)
-    map(F) do f
-        T[convert(T, MP.degree(t, v)) for v in variables, t in MP.terms(f)]
+        f(cell)
     end
 end
 
@@ -1042,21 +1005,237 @@ function degree(A::Matrix)
     d
 end
 
-function shift_indices!(indices)
-    n = length(indices)
-    @inbounds for i in 1:n
-        aᵢ, bᵢ = indices[i]
-        indices[i] = (aᵢ - (n + 1), bᵢ - (n + 1))
-    end
-    indices
+##########################
+# Regeneration Traverser #
+##########################
+
+struct RegenerationTraverser{L,H}
+    traversers::Vector{MixedCellTraverser{L,H,LexicographicOrdering}}
 end
-function unshift_indices!(indices)
-    n = length(indices)
-    @inbounds for i in 1:n
-        aᵢ, bᵢ = indices[i]
-        indices[i] = (aᵢ + n + 1, bᵢ + n + 1)
+
+function RegenerationTraverser(As)
+    n = size(As[1], 1)
+    L = [zeros(eltype(As[1]), n) LinearAlgebra.I]
+
+    traversers = map(1:n) do k
+        # construct padded cayley matrix
+        systems = As[1:(k-1)]
+        push!(systems, [degree(As[k])*L As[k]])
+        for i in k+1:n
+            push!(systems, L)
+        end
+
+        A = cayley(systems)
+
+        # τ is the vector with an entry of each column in A having entries
+        # indexed by one of the additional columns equal to -1 and 0 otherwise
+        τ = zeros(eltype(A), size(A, 2))
+        j = 1
+        for (i, Aᵢ) in enumerate(As)
+            if i == k
+                τ[j:j+n] .= -one(eltype(A))
+                break
+            else# i < k
+                j += size(Aᵢ, 2)
+            end
+        end
+
+        # this is only a valid mixed cell of the first mixed cell
+        cell_indices = [(i, i+1) for i in 1:n]
+        indexing = CayleyIndexing(size.(systems, 2))
+        mixed_cell = MixedCell(cell_indices, A, indexing;
+                # only need to fill circuit table for first
+                fill_circuit_table=(k == 1))
+        MixedCellTraverser(mixed_cell, A, τ)
     end
-    indices
+
+    RegenerationTraverser(traversers)
+end
+
+
+function traverse(f, T::RegenerationTraverser)
+    n = length(T.traversers)
+    i = 1
+    while i > 0
+        el = iterate(T.traversers[i])
+        if el === nothing
+            i -= 1
+            continue
+        end
+
+        cell, _ = el
+        # ignore all cells where one of the artifical columns is part
+        aᵢ, bᵢ = cell.indices[i]
+        (aᵢ > n + 1 && bᵢ > n + 1) || continue
+
+        # If last stage then we emit the cell
+        if i == n
+            f(cell)
+            continue
+        end
+
+        # Move to the next stage
+        regeneration_stage_carry_over!(T.traversers[i+1], T.traversers[i], i)
+        i += 1
+    end
+end
+
+function regeneration_stage_carry_over!(
+    T_B::MixedCellTraverser{LowInt, HighInt},
+    T_A::MixedCellTraverser,
+    stage::Integer) where {LowInt, HighInt}#
+
+    A = T_A.mixed_cell
+    B = T_B.mixed_cell
+    # A is a mixed cell at stage i
+    # B will be the mixed cell at stage i + 1
+    # A has a linear polynomial (L), i.e., n + 1 columns in the current configuration
+    # B has the scaled simplex (d * L) + config matrix
+    n = nconfigurations(A.indexing)
+
+    d = T_B.cayley[1, offset(B.indexing, stage + 1) + 2]
+
+    B.indices .= A.indices
+    B.indices[stage] = B.indices[stage] .- (n+1, n+1)
+    B.volume = A.volume ⊙ d
+
+    # The circuit tables are nearly identical, A just has for each configuration n+1 rows too much.
+    @inbounds for config in 1:n
+        B_off = offset(B.indexing, config)
+        A_off = offset(A.indexing, config)
+        config_cols = ncolumns(B.indexing, config)
+
+        if config == stage + 1
+            # We need to compute the circuits for the new config matrix part
+            # We can compute them as a weighted sum of old circuits
+
+            # We can carry over the scaled circuits for the first part
+            for k = 1:n
+                if k == config
+                    # we have to multiply by d since we scale the volume
+                    for j = 1:n+1
+                        B.circuit_table[B_off + j, k] = A.circuit_table[A_off + j, k]
+                    end
+                else
+                    # we have to multiply by d since we scale the volume
+                    for j = 1:n+1
+                        B.circuit_table[B_off + j, k] = A.circuit_table[A_off + j, k] ⊙ d
+                    end
+                end
+            end
+
+            # Now we need to compute the new circuits
+            # We can compute them by using hte fact that the first n+1 columns
+            # are an affine basis of R^n.
+            aᵢ, bᵢ = B.indices[stage]
+            for j = n+2:config_cols
+                for k = 1:n
+                    c_0k = HighInt(B.circuit_table[B_off + 1, k])
+                    # rest will we computed in HighInt
+                    b_jk = d * c_0k
+                    for i = 1:n
+                        b_jk += T_B.cayley[i, B_off + j] * (B.circuit_table[B_off + i + 1, k] - c_0k)
+                    end
+                    B.circuit_table[B_off + j, k] = b_jk # converts back to LowInt
+                end
+            end
+
+            for k = 1:n
+                for j = 1:n+1
+                    # we have to multiply by d sine we change the system from L to (d * L)
+                    B.circuit_table[B_off + j, k] = B.circuit_table[B_off + j, k] * d
+                end
+            end
+
+        else
+            # We can simply carry over things
+            if config == stage
+                A_off += n + 1
+            end
+            for k = 1:n
+                if k == stage + 1
+                    for j = 1:config_cols
+                        B.circuit_table[B_off + j, k] = A.circuit_table[A_off + j, k]
+                    end
+                elseif A.table_col_bound[k] * HighInt(d) < typemax(LowInt) # no overflow
+                    for j = 1:config_cols
+                        B.circuit_table[B_off + j, k] = A.circuit_table[A_off + j, k] * d
+                    end
+                else # possible overflow
+                    for j = 1:config_cols
+                        B.circuit_table[B_off + j, k] = A.circuit_table[A_off + j, k] ⊙ d
+                    end
+                end
+            end
+        end
+    end
+    compute_table_col_bound!(B)
+    T_B
+end
+
+function compute_table_col_bound!(M::MixedCell)
+    m, n = size(M.circuit_table)
+    @inbounds for j in 1:n
+        max_el = min_el = zero(eltype(M.circuit_table))
+        for i in 1:m
+            v = M.circuit_table[i, j]
+            max_el = max(max_el, v)
+            min_el = max(min_el, v)
+        end
+        M.table_col_bound[j] = max(-min_el, max_el)
+    end
+    M
+end
+
+
+################
+# Mixed Volume #
+################
+mutable struct MixedVolumeCounter{T}
+    volume::T
+end
+MixedVolumeCounter() = MixedVolumeCounter(0)
+function (MVC::MixedVolumeCounter)(cell)
+    MVC.volume += cell.volume
+end
+
+Base.show(io::IO, MVC::MixedVolumeCounter) = print(io, "MixedVolume: $(MVC.volume)")
+
+
+traverser(Aᵢ::Matrix...; kwargs...) = traverser(Aᵢ; kwargs...)
+function traverser(As::Vector{<:Matrix}; algorithm=:regeneration)
+    if algorithm == :regeneration
+        RegenerationTraverser(As)
+    elseif algorithm == :total_degree
+        TotalDegreeTraverser(As)
+    else
+        throw(ArgumentError("Unknown `algorithm=$algorithm`. Possible choices are `:regeneration` and `:total_degree`."))
+    end
+end
+traverser(f::MP.AbstractPolynomialLike...; kwargs...) = traverser(f; kwargs...)
+function traverser(F::Vector{<:MP.AbstractPolynomialLike}; kwargs...)
+    traverser(support(F); kwargs...)
+end
+
+function support(F::Vector{<:MP.AbstractPolynomialLike}, vars=MP.variables(F), T::Type{<:Integer}=Int32)
+    map(f -> [convert(T, MP.degree(t, v)) for v in vars, t in MP.terms(f)], F)
+end
+
+"""
+    mixed_volume(F::Vector{<:MP.AbstractPolynomialLike}; algorithm=:regeneration)
+    mixed_volume(𝑨::Vector{<:Matrix}; algorithm=:regeneration)
+
+Compute the mixed volume of the given polynomial system `F` resp. represented
+by the support `𝑨`.
+There are two possible values for `algorithm`:
+* `:total_degree`: Use the total degree homotopy algorithm described in Section 7.1
+* `:regeneration`: Use the tropical regeneration algorithm described in Section 7.2
+"""
+function mixed_volume(args...; kwargs...)
+    T = traverser(args...; kwargs...)
+    mv = MixedVolumeCounter()
+    traverse(mv, T)
+    mv.volume
 end
 
 
@@ -1065,12 +1244,11 @@ end
 
 Enumerate all mixed cells.
 """
-function enumerate_mixed_cells(f, As, weights)
+function enumerate_mixed_cells(f, As::Vector{<:Matrix}, weights::Vector{<:Vector{<:Integer}}; kwargs...)
     # We need to chain two traversers
     # 1) We compute a mixed subdivision w.r.t to the lexicographic ordering
     # 2) Each cell we then track to the mixed cells wrt to the given lifting
-    start_mixed_cell, τ = total_degree_homotopy_start(As)
-    start_traverser = MixedCellTraverser(start_mixed_cell, τ)
+    T₁ = traverser(As; kwargs...)
 
     target_cell = uninitialized_mixed_cell(As)
     target_weights = copy(weights[1])
@@ -1079,19 +1257,15 @@ function enumerate_mixed_cells(f, As, weights)
     end
     target_traverser = MixedCellTraverser(target_cell, target_weights)
 
-    traverse(start_traverser) do cell
-        n = length(cell.indices)
-        # ignore all cells where one of the artifical columns is part
-        for (aᵢ, bᵢ) in cell.indices
-            (aᵢ ≤ n + 1 || bᵢ ≤ n + 1) && return nothing
-        end
+    traverse(T₁) do cell
         # Chain to the second traverser
-        total_degree_carry_over!(target_traverser.mixed_cell, cell)
-        traverse(target_traverser) do cell₂
+        carry_over!(target_traverser.mixed_cell, cell, T₁)
+        for cell₂ in target_traverser
             compute_inequality_dots!(cell₂, target_weights)
             f(cell₂)
         end
     end
+    nothing
 end
 
 "Create a mixed cell filled with dummy data."
@@ -1102,42 +1276,49 @@ function uninitialized_mixed_cell(As)
 end
 
 """
-    total_degree_carry_over!(target_cell::MixedCell, start_cell::MixedCell)
+    carry_over!(target_cell::MixedCell, start_cell::MixedCell, T::AbstractTraverser)
 
-We carry over the state (including circuit table) of a start cell (in a total degree homotopy)
+We carry over the state (including circuit table) of a start cell
 to the cell corresponding to the final homotopy.
+This assumes that the
 """
-function total_degree_carry_over!(B::MixedCell, A::MixedCell)
-    B.indices .= A.indices
-    shift_indices!(B.indices)
-    B.volume = A.volume
-    # The circuit tables are nearly identical, A just has for each configuration n+1 rows too much.
+function carry_over!(B::MixedCell, A::MixedCell, ::TotalDegreeTraverser)
     n = nconfigurations(B.indexing)
+
+    B.indices .= A.indices
+    @inbounds for i in 1:n
+        indices[i] = A.indices[i] .- (n + 1, n + 1)
+    end
+    B.volume = A.volume
+    # The circuit tables are nearly identical,
+    # A just has for each configuration n+1 rows too much.
     for i = 1:n
         off = offset(B.indexing, i)
-        soff = offset(A.indexing, i)
+        A_off = offset(A.indexing, i) + n + 1
         for j = 1:ncolumns(B.indexing, i), k = 1:n
-            @inbounds B.circuit_table[off + j, k] = A.circuit_table[soff + j + n + 1, k]
+            @inbounds B.circuit_table[off + j, k] = A.circuit_table[A_off + j, k]
         end
     end
     B
 end
-
-#
-# """
-#     MixedSubdivision(configurations::Vector{<:Matrix}, cell_indices::Vector{Vector{NTuple{2,Int}}})
-# """
-# struct MixedSubdivision{I<:Integer}
-#     mixed_cells::Vector{MixedCell{I}}
-#     cayley::Matrix{I}
-# end
-#
-# function MixedSubdivision(configurations::Vector{<:Matrix}, cell_indices::Vector{Vector{NTuple{2,Int}}})
-#     C = cayley(configurations)
-#     indexing = CayleyIndexing(size.(configurations, 2))
-#     mixed_cells = map(cell -> MixedCell(cell, C, indexing), cell_indices)
-#     MixedSubdivision(mixed_cells, C)
-# end
-
+function carry_over!(B::MixedCell, A::MixedCell, ::RegenerationTraverser)
+    n = nconfigurations(B.indexing)
+    B.indices .= A.indices
+    B.indices[n] = B.indices[n] .- (n+1, n+1)
+    B.volume = A.volume
+    # The circuit tables are nearly identical,
+    # A just has for the last configuration n+1 rows too much.
+    for i = 1:n
+        off = offset(B.indexing, i)
+        A_off = offset(A.indexing, i)
+        if i == n
+            A_off += n + 1
+        end
+        for j = 1:ncolumns(B.indexing, i), k = 1:n
+            @inbounds B.circuit_table[off + j, k] = A.circuit_table[A_off + j, k]
+        end
+    end
+    B
+end
 
 end # module

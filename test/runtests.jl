@@ -53,4 +53,7 @@ using Test
 	@test mixed_volume(equations(cyclic(10))) == 35940
 	@test mixed_volume(equations(cyclic(11))) == 184756
 	@test mixed_volume(equations(ipp2())) == 288
+
+	@test mixed_volume(equations(cyclic(5)), algorithm=:total_degree) == 70
+	@test mixed_volume(equations(ipp2()), algorithm=:total_degree) == 288
 end
