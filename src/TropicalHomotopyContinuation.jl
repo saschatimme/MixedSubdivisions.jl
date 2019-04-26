@@ -2,7 +2,7 @@ module TropicalHomotopyContinuation
 
 export MixedCell, TermOrdering, DotOrdering, LexicographicOrdering,
         cayley,
-        mixed_volume, enumerate_mixed_cells
+        mixed_volume, MixedCellIterator, Cell, mixed_cells
 
 import MultivariatePolynomials
 const MP = MultivariatePolynomials
@@ -779,7 +779,7 @@ end
 ##############
 # TRAVERSERS #
 ##############
-abstract type AbstractTraverser end
+abstract type AbstractTraverser{LowInt, HighInt} end
 
 function traverse(f, traverser::AbstractTraverser)
     for cell in traverser
@@ -858,7 +858,7 @@ function reverse_exchange_column!(cell::MixedCell, v::SearchTreeVertex)
     exchange_column!(cell, v.exchange, v.reverse_index)
 end
 
-mutable struct MixedCellTraverser{LowInt, HighInt, Ord<:TermOrdering} <: AbstractTraverser
+mutable struct MixedCellTraverser{LowInt, HighInt, Ord<:TermOrdering} <: AbstractTraverser{LowInt, HighInt}
     mixed_cell::MixedCell{LowInt, HighInt}
     cayley::Matrix{LowInt}
     target::Vector{LowInt}
@@ -944,7 +944,7 @@ end
 # Total Degree Homotopy #
 #########################
 
-struct TotalDegreeTraverser{LowInt<:Integer, HighInt<:Integer} <: AbstractTraverser
+struct TotalDegreeTraverser{LowInt<:Integer, HighInt<:Integer} <: AbstractTraverser{LowInt, HighInt}
     traverser::MixedCellTraverser{LowInt, HighInt, LexicographicOrdering}
 end
 
@@ -1022,7 +1022,7 @@ end
 # Regeneration Traverser #
 ##########################
 
-struct RegenerationTraverser{L,H} <: AbstractTraverser
+struct RegenerationTraverser{L,H} <: AbstractTraverser{L, H}
     traversers::Vector{MixedCellTraverser{L,H,LexicographicOrdering}}
 end
 
@@ -1253,40 +1253,115 @@ function mixed_volume(args...; kwargs...)
     mv.volume
 end
 
-"""
-    enumerate_mixed_cells(f, As, weights)
+mutable struct Cell
+    indices::Vector{NTuple{2, Int}}
+    normal::Vector{Int}
+    volume::Int
+end
 
-Enumerate all mixed cells.
-"""
-function enumerate_mixed_cells(f, As::Vector{<:Matrix}, weights::Vector{<:Vector{<:Integer}}; kwargs...)
+function Cell(n::Int, ::Type{T}=Int32) where T
+    indices = [(1, 1) for _ in 1:n]
+    normal = zeros(Int, n)
+    Cell(indices, normal, 0)
+end
+
+Base.copy(C::Cell) = Cell(copy(C.indices), copy(C.normal), C.volume)
+
+function Base.show(io::IO, C::Cell)
+    println(io, "Cell:")
+    println(io, " • volume → ", C.volume)
+    println(io, " • indices → ", C.indices)
+    print(io, " • normal → ", C.normal)
+end
+Base.show(io::IO, ::MIME"application/prs.juno.inline", C::Cell) = C
+
+struct MixedCellIterator{LowInt, HighInt, T<:AbstractTraverser{LowInt, HighInt}}
+    start_traverser::T
+    target_traverser::MixedCellTraverser{LowInt, HighInt, LexicographicOrdering}
+    support::Vector{Matrix{LowInt}}
+    lifting::Vector{Vector{LowInt}}
+    # cache to not allocate during return
+    cell::Cell
+    # cache for cell computation
+    D::Matrix{Float64}
+    b::Vector{Float64}
+end
+
+function MixedCellIterator(support::Vector{<:Matrix{<:Integer}}, lifting::Vector{<:Vector{<:Integer}}; kwargs...)
+    MixedCellIterator(
+        convert(Vector{Matrix{Int32}}, support),
+        convert(Vector{Vector{Int32}}, lifting); kwargs...)
+end
+function MixedCellIterator(support::Vector{Matrix{Int32}}, lifting::Vector{Vector{Int32}}; kwargs...)
     # We need to chain two traversers
     # 1) We compute a mixed subdivision w.r.t to the lexicographic ordering
     # 2) Each cell we then track to the mixed cells wrt to the given lifting
-    T₁ = traverser(As; kwargs...)
+    start_traverser = traverser(support; kwargs...)
 
-    target_cell = uninitialized_mixed_cell(As)
-    target_weights = copy(weights[1])
-    for i = 2:length(weights)
-        append!(target_weights, weights[i])
+    # intialize target mixed cell with some dummy data
+    indices = map(_ -> (1,2), support)
+    indexing = CayleyIndexing(size.(support, 2))
+    A = cayley(support)
+    target_cell = MixedCell(indices, A, indexing; fill_circuit_table=false)
+    target_lifting = copy(lifting[1])
+    for i = 2:length(lifting)
+        append!(target_lifting, lifting[i])
     end
-    target_traverser = MixedCellTraverser(target_cell, target_weights)
+    target_traverser = MixedCellTraverser(target_cell, A, target_lifting)
+    # initial dummy cell
+    cell = Cell(length(support))
+    # cache
+    n = length(support)
+    D = zeros(n, n)
+    b = zeros(n)
 
-    traverse(T₁) do cell
-        # Chain to the second traverser
-        carry_over!(target_traverser.mixed_cell, cell, T₁)
-        for cell₂ in target_traverser
-            compute_inequality_dots!(cell₂, target_weights)
-            f(cell₂)
-        end
-    end
-    nothing
+    MixedCellIterator(start_traverser, target_traverser, support, lifting, cell, D, b)
 end
 
-"Create a mixed cell filled with dummy data."
-function uninitialized_mixed_cell(As)
-    indices = map(_ -> (1,2), As)
-    indexing = CayleyIndexing(size.(As, 2))
-    MixedCell(indices, cayley(As), indexing; fill_circuit_table=false)
+
+Base.IteratorSize(::Type{<:MixedCellIterator}) = Base.SizeUnknown()
+Base.IteratorEltype(::Type{<:MixedCellIterator}) = Base.HasEltype()
+Base.eltype(::MixedCellIterator) = Cell
+
+@inline function Base.iterate(iter::MixedCellIterator, state=nothing)
+    if state === nothing
+        el = iterate(iter.start_traverser)
+        start_state = 1
+        using_start_traverser = true
+    else
+        using_start_traverser, start_state = state
+        if using_start_traverser
+            el = iterate(iter.start_traverser, start_state)
+        else
+            el = iterate(iter.target_traverser)
+        end
+    end
+
+    while true
+        if el === nothing
+            if using_start_traverser
+                break
+            else
+                using_start_traverser = true
+                el = iterate(iter.start_traverser, start_state)
+                continue
+            end
+        end
+
+        if using_start_traverser
+            mixed_cell, start_state = el
+        else
+            mixed_cell, _ = el
+            fill_cell!(iter, mixed_cell)
+            return iter.cell, (false, start_state)
+        end
+
+        # Move to the target traverser
+        carry_over!(iter.target_traverser.mixed_cell, mixed_cell, iter.start_traverser)
+        using_start_traverser = false
+        el = iterate(iter.target_traverser)
+    end
+    nothing
 end
 
 """
@@ -1300,7 +1375,7 @@ function carry_over!(B::MixedCell, A::MixedCell, ::TotalDegreeTraverser)
     n = nconfigurations(B.indexing)
 
     B.indices .= A.indices
-    @inbounds for i in 1:n
+    for i in 1:n
         indices[i] = A.indices[i] .- (n + 1, n + 1)
     end
     B.volume = A.volume
@@ -1310,7 +1385,7 @@ function carry_over!(B::MixedCell, A::MixedCell, ::TotalDegreeTraverser)
         off = offset(B.indexing, i)
         A_off = offset(A.indexing, i) + n + 1
         for j = 1:ncolumns(B.indexing, i), k = 1:n
-            @inbounds B.circuit_table[off + j, k] = A.circuit_table[A_off + j, k]
+            B.circuit_table[off + j, k] = A.circuit_table[A_off + j, k]
         end
     end
     B
@@ -1329,10 +1404,45 @@ function carry_over!(B::MixedCell, A::MixedCell, ::RegenerationTraverser)
             A_off += n + 1
         end
         for j = 1:ncolumns(B.indexing, i), k = 1:n
-            @inbounds B.circuit_table[off + j, k] = A.circuit_table[A_off + j, k]
+            B.circuit_table[off + j, k] = A.circuit_table[A_off + j, k]
         end
     end
     B
 end
+
+function fill_cell!(iter::MixedCellIterator, mixed_cell::MixedCell)
+    for i in 1:length(mixed_cell.indices)
+        (aᵢ, bᵢ) = mixed_cell.indices[i]
+        iter.cell.indices[i] = (Int(aᵢ), Int(bᵢ))
+    end
+    iter.cell.volume = mixed_cell.volume
+    compute_normal!(iter.cell, iter)
+    iter.cell
+end
+
+function compute_normal!(cell::Cell, iter::MixedCellIterator)
+    n = length(iter.support)
+    for i in 1:n
+        aᵢ, bᵢ = cell.indices[i]
+        for j in 1:n
+            iter.D[i, j] = iter.support[i][j, aᵢ] - iter.support[i][j, bᵢ]
+        end
+        iter.b[i] = (iter.lifting[i][bᵢ] - iter.lifting[i][aᵢ]) * cell.volume
+    end
+
+    LinearAlgebra.ldiv!(LinearAlgebra.generic_lufact!(iter.D), iter.b)
+    cell.normal .= round.(Int, iter.b)
+end
+
+"""
+    mixed_cells(support::Vector{<:Matrix}, lifting::Vector{<:Vector})
+
+Compute all mixed cells with respect to the given lift.
+"""
+function mixed_cells(support::Vector{<:Matrix}, lifting::Vector{<:Vector})
+    iter = MixedCellIterator(support, lifting)
+    [copy(c) for c in iter]
+end
+
 
 end # module
