@@ -782,6 +782,14 @@ end
 ##############
 abstract type AbstractTraverser end
 
+function traverse(f, traverser::AbstractTraverser)
+    for cell in traverser
+        f(cell)
+    end
+    nothing
+end
+
+
 #######################
 # Mixed Cell Traverser
 #######################
@@ -888,7 +896,7 @@ Base.IteratorSize(::Type{<:MixedCellTraverser}) = Base.SizeUnknown()
 Base.IteratorEltype(::Type{<:MixedCellTraverser}) = Base.HasEltype()
 Base.eltype(::Type{MixedCellTraverser{L,H,O}}) where {L,H,O} = MixedCell{L,H}
 
-@inline function Base.iterate(traverser::MixedCellTraverser, state=nothing)
+@inline function Base.iterate(traverser::MixedCellTraverser, _=nothing)
     cell, search_tree = traverser.mixed_cell, traverser.search_tree
     τ, τ_bound, ord = traverser.target, traverser.target_bound, traverser.ord
 
@@ -933,18 +941,11 @@ Base.eltype(::Type{MixedCellTraverser{L,H,O}}) where {L,H,O} = MixedCell{L,H}
     nothing
 end
 
-function traverse(f, traverser::MixedCellTraverser)
-    for cell in traverser
-        f(cell)
-    end
-    nothing
-end
-
 #########################
 # Total Degree Homotopy #
 #########################
 
-struct TotalDegreeTraverser{LowInt<:Integer, HighInt<:Integer}
+struct TotalDegreeTraverser{LowInt<:Integer, HighInt<:Integer} <: AbstractTraverser
     traverser::MixedCellTraverser{LowInt, HighInt, LexicographicOrdering}
 end
 
@@ -976,8 +977,18 @@ function TotalDegreeTraverser(As::Vector{Matrix{LowInt}}) where {LowInt<:Integer
     TotalDegreeTraverser(traverser)
 end
 
-function traverse(f, T::TotalDegreeTraverser)
-    for cell in T.traverser
+Base.IteratorSize(::Type{<:TotalDegreeTraverser}) = Base.SizeUnknown()
+Base.IteratorEltype(::Type{<:TotalDegreeTraverser}) = Base.HasEltype()
+Base.eltype(::TotalDegreeTraverser{L,H}) where {L,H} = MixedCell{L,H}
+
+@inline function Base.iterate(T::TotalDegreeTraverser, state=nothing)
+    if state === nothing
+        cell_nextstate = iterate(T.traverser)
+    else
+        cell_nextstate = iterate(T.traverser, state)
+    end
+    while cell_nextstate !== nothing
+        cell, nextstate = cell_nextstate
         n = length(cell.indices)
         # ignore all cells where one of the artifical columns is part
         valid_cell = true
@@ -987,10 +998,13 @@ function traverse(f, T::TotalDegreeTraverser)
                 break
             end
         end
-        valid_cell || continue
-
-        f(cell)
+        if !valid_cell
+            cell_nextstate = iterate(T.traverser, nextstate)
+            continue
+        end
+        return cell, nextstate
     end
+    nothing
 end
 
 function degree(A::Matrix)
@@ -1009,7 +1023,7 @@ end
 # Regeneration Traverser #
 ##########################
 
-struct RegenerationTraverser{L,H}
+struct RegenerationTraverser{L,H} <: AbstractTraverser
     traversers::Vector{MixedCellTraverser{L,H,LexicographicOrdering}}
 end
 
@@ -1052,32 +1066,34 @@ function RegenerationTraverser(As)
     RegenerationTraverser(traversers)
 end
 
+Base.IteratorSize(::Type{<:RegenerationTraverser}) = Base.SizeUnknown()
+Base.IteratorEltype(::Type{<:RegenerationTraverser}) = Base.HasEltype()
+Base.eltype(::RegenerationTraverser{L,H}) where {L,H} = MixedCell{L,H}
 
-function traverse(f, T::RegenerationTraverser)
-    n = length(T.traversers)
-    i = 1
-    while i > 0
-        el = iterate(T.traversers[i])
+@inline function Base.iterate(T::RegenerationTraverser, stage=1)
+    while stage > 0
+        el = iterate(T.traversers[stage])
         if el === nothing
-            i -= 1
+            stage -= 1
             continue
         end
 
         cell, _ = el
-        # ignore all cells where one of the artifical columns is part
-        aᵢ, bᵢ = cell.indices[i]
+
+        n = length(cell.indices)
+        aᵢ, bᵢ = cell.indices[stage]
         (aᵢ > n + 1 && bᵢ > n + 1) || continue
 
         # If last stage then we emit the cell
-        if i == n
-            f(cell)
-            continue
+        if stage == n
+            return cell, stage
         end
 
         # Move to the next stage
-        regeneration_stage_carry_over!(T.traversers[i+1], T.traversers[i], i)
-        i += 1
+        regeneration_stage_carry_over!(T.traversers[stage+1], T.traversers[stage], stage)
+        stage += 1
     end
+    nothing
 end
 
 function regeneration_stage_carry_over!(
@@ -1237,7 +1253,6 @@ function mixed_volume(args...; kwargs...)
     traverse(mv, T)
     mv.volume
 end
-
 
 """
     enumerate_mixed_cells(f, As, weights)
