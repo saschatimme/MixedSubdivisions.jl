@@ -24,7 +24,7 @@ struct MuliplicativeInverse{T<:Signed}
     a::T # a = p * 2^k
     p::T
     p_inv::T # multiplicative inverse of p
-    k::UInt8
+    shift::UInt8
 end
 function MuliplicativeInverse(a)
     k = convert(UInt8, trailing_zeros(a))
@@ -32,6 +32,9 @@ function MuliplicativeInverse(a)
     p_inv = multiplicative_inverse_odd(p)
     MuliplicativeInverse(a, p, p_inv, k)
 end
+
+shift!(x::T, inv::MuliplicativeInverse{T}) where T = x >> inv.shift
+needs_shift(inv::MuliplicativeInverse) = inv.shift != 0
 
 """
     multiplicative_inverse_odd(x)
@@ -54,10 +57,6 @@ function multiplicative_inverse_odd(x::Int128)
     Base.Cartesian.@nexprs 6 _ -> y = newton_step(x, y)
 end
 newton_step(x, y) = y * (oftype(x, 2) - y * x)
-
-function Base.div(x::T, y::MuliplicativeInverse{T}) where T
-    (x >> y.k) * y.p_inv
-end
 
 
 """
@@ -737,15 +736,15 @@ end
             r̂ᵢ = rᵢ * vol⁻¹.p_inv
             d̂ = d * vol⁻¹.p_inv
             # avoid shift
-            if vol⁻¹.k == 0
+            if needs_shift(vol⁻¹)
                 for k in Base.OneTo(m)
-                    v = (d̂ * table[k, i] + r̂ᵢ * rotated_column[k])
+                    v = shift!(d̂ * table[k, i] + r̂ᵢ * rotated_column[k], vol⁻¹)
                     table[k, i] = v
                     min_el, max_el = min(min_el, v), max(max_el, v)
                 end
             else
                 for k in Base.OneTo(m)
-                    v = (d̂ * table[k, i] + r̂ᵢ * rotated_column[k]) >> vol⁻¹.k
+                    v = (d̂ * table[k, i] + r̂ᵢ * rotated_column[k])
                     table[k, i] = v
                     min_el, max_el = min(min_el, v), max(max_el, v)
                 end
@@ -757,15 +756,15 @@ end
             r̂ᵢ_64 = Int64(rᵢ) * vol⁻¹_64.p_inv
             d̂_64 = Int64(d) * vol⁻¹_64.p_inv
             # avoid shift
-            if vol⁻¹.k == 0
+            if needs_shift(vol⁻¹)
                 for k in Base.OneTo(m)
-                    v = (d̂_64 * Int64(table[k, i]) + r̂ᵢ_64 * Int64(rotated_column[k]))
+                    v = shift!(d̂_64 * Int64(table[k, i]) + r̂ᵢ_64 * Int64(rotated_column[k]), vol⁻¹_64)
                     table[k, i] =  Base.unsafe_trunc(Int32, v) # unsafe version to not loose vectorization
                     min_el, max_el = min(min_el, v), max(max_el, v)
                 end
             else
                 for k in Base.OneTo(m)
-                    v = (d̂_64 * Int64(table[k, i]) + r̂ᵢ_64 * Int64(rotated_column[k])) >> vol⁻¹_64.k
+                    v = (d̂_64 * Int64(table[k, i]) + r̂ᵢ_64 * Int64(rotated_column[k]))
                     table[k, i] =  Base.unsafe_trunc(Int32, v) # unsafe version to not loose vectorization
                     min_el, max_el = min(min_el, v), max(max_el, v)
                 end
