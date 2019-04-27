@@ -29,15 +29,15 @@ using Test
 	    mixed_cell_indices = [(2, 3), (1, 3)]
 	    indexing = MS.CayleyIndexing(size.((A₁, A₂), 2))
 	    ord = MS.DotOrdering(Int32.(w))
-	    cell = MixedCellTable(mixed_cell_indices, A, indexing)
+	    cell = MS.MixedCellTable(mixed_cell_indices, A, indexing)
 	    @test cell.volume == 3
 	    @test cell.circuit_table == [1 2; 3 0; 0 0; 1 -1; 0 3; 1 2; 0 0; -2 -1]
 	    ineq = MS.first_violated_inequality(cell, v, ord)
 	    @test ineq.config_index == 1
 	    @test ineq.col_index == 4
 
-	    @test MS.exchange_column(cell, MS.exchange_first, ineq) == MixedCellTable([(4, 3), (1, 3)], A, indexing)
-	    @test MS.exchange_column(cell, MS.exchange_second, ineq) == MixedCellTable([(2, 4), (1, 3)], A, indexing)
+	    @test MS.exchange_column(cell, MS.exchange_first, ineq) == MS.MixedCellTable([(4, 3), (1, 3)], A, indexing)
+	    @test MS.exchange_column(cell, MS.exchange_second, ineq) == MS.MixedCellTable([(2, 4), (1, 3)], A, indexing)
 
 	    ind_back = MS.reverse_index(ineq, cell, MS.exchange_second)
 	    cell2 = MS.exchange_column(cell, MS.exchange_second, ineq)
