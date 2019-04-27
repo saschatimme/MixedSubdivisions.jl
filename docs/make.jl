@@ -8,5 +8,5 @@ makedocs(
 )
 
 deploydocs(
-    repo   = "github.com/JuliaHomotopyContinuation/MixedSubdivisions.jl.git",
+    repo   = "github.com/saschatimme/MixedSubdivisions.jl.git",
 )
