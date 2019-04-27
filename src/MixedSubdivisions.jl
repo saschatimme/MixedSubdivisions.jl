@@ -1,7 +1,6 @@
 module MixedSubdivisions
 
-export mixed_volume, MixedCellIterator, MixedCell, mixed_cells, volume, normal, indices,
-    support
+export mixed_volume, MixedCellIterator, MixedCell, mixed_cells, volume, normal, indices, support
     #MixedCellTable, TermOrdering, DotOrdering, LexicographicOrdering, cayley
 
 import MultivariatePolynomials

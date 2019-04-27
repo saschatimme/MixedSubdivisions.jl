@@ -1,0 +1,6 @@
+[deps]
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+MixedSubdivisions = "291d046c-3347-11e9-1e74-c3d251d406c6"
+
+[compat]
+Documenter = "^0.22.0"
