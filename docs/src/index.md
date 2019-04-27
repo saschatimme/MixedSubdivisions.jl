@@ -117,9 +117,6 @@ MixedCell:
 ```
 
 
-
-### Mixed Cell
-
 ## API
 
 ```@docs
