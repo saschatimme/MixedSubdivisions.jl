@@ -28,15 +28,15 @@ using Test
     mixed_cell_indices = [(2, 3), (1, 3)]
     indexing = THC.CayleyIndexing(size.((A₁, A₂), 2))
     ord = THC.DotOrdering(Int32.(w))
-    cell = MixedCell(mixed_cell_indices, A, indexing)
+    cell = MixedCellTable(mixed_cell_indices, A, indexing)
     @test cell.volume == 3
     @test cell.circuit_table == [1 2; 3 0; 0 0; 1 -1; 0 3; 1 2; 0 0; -2 -1]
     ineq = THC.first_violated_inequality(cell, v, ord)
     @test ineq.config_index == 1
     @test ineq.col_index == 4
 
-    @test THC.exchange_column(cell, THC.exchange_first, ineq) == MixedCell([(4, 3), (1, 3)], A, indexing)
-    @test THC.exchange_column(cell, THC.exchange_second, ineq) == MixedCell([(2, 4), (1, 3)], A, indexing)
+    @test THC.exchange_column(cell, THC.exchange_first, ineq) == MixedCellTable([(4, 3), (1, 3)], A, indexing)
+    @test THC.exchange_column(cell, THC.exchange_second, ineq) == MixedCellTable([(2, 4), (1, 3)], A, indexing)
 
     ind_back = THC.reverse_index(ineq, cell, THC.exchange_second)
     cell2 = THC.exchange_column(cell, THC.exchange_second, ineq)
