@@ -1,9 +1,9 @@
-using TropicalHomotopyContinuation
-const THC = TropicalHomotopyContinuation
+using MixedSubdivisions
+const THC = MixedSubdivisions
 import PolynomialTestSystems: equations, cyclic, ipp2
 using Test
 
-@testset "TropicalHomotopyContinuation" begin
+@testset "MixedSubdivisions" begin
 	@testset "Basic" begin
 	    A₁ = [0 0 1 1; 0 2 0 1]
 	    A₂ = [0 0 1 2; 0 1 1 0]

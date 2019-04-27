@@ -1,4 +1,4 @@
-name = "TropicalHomotopyContinuation"
+name = "MixedSubdivisions"
 uuid = "291d046c-3347-11e9-1e74-c3d251d406c6"
 authors = ["Sascha Timme <sascha.timme@gmail.com>"]
 version = "0.1.0"
