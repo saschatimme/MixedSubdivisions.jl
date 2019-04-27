@@ -1243,7 +1243,7 @@ end
 
 mutable struct Cell
     indices::Vector{NTuple{2, Int}}
-    normal::Vector{Int}
+    normal::Vector{Float64}
     volume::Int
 end
 
@@ -1401,11 +1401,11 @@ function compute_normal!(cell::Cell, iter::MixedCellIterator)
         for j in 1:n
             iter.D[i, j] = iter.support[i][j, aᵢ] - iter.support[i][j, bᵢ]
         end
-        iter.b[i] = (iter.lifting[i][bᵢ] - iter.lifting[i][aᵢ]) * cell.volume
+        iter.b[i] = (iter.lifting[i][bᵢ] - iter.lifting[i][aᵢ])
     end
 
     LinearAlgebra.ldiv!(LinearAlgebra.generic_lufact!(iter.D), iter.b)
-    cell.normal .= round.(Int, iter.b)
+    cell.normal .= iter.b
 end
 
 """
