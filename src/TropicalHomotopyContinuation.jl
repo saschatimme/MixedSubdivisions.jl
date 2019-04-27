@@ -1,7 +1,8 @@
 module TropicalHomotopyContinuation
 
-export mixed_volume, MixedCellIterator, MixedCell, mixed_cells,
-    MixedCellTable, TermOrdering, DotOrdering, LexicographicOrdering, cayley
+export mixed_volume, MixedCellIterator, MixedCell, mixed_cells, volume, normal, indices,
+    support
+    #MixedCellTable, TermOrdering, DotOrdering, LexicographicOrdering, cayley
 
 import MultivariatePolynomials
 const MP = MultivariatePolynomials
@@ -1215,6 +1216,12 @@ function traverser(F::Vector{<:MP.AbstractPolynomialLike}; kwargs...)
     traverser(support(F); kwargs...)
 end
 
+"""
+    support(F::Vector{<:MP.AbstractPolynomialLike}, vars=MP.variables(F), T::Type{<:Integer}=Int32)
+
+Compute the support of the polynomial system `F` with the given variables `vars`.
+The returned matrices have element type `T`.
+"""
 function support(F::Vector{<:MP.AbstractPolynomialLike}, vars=MP.variables(F), T::Type{<:Integer}=Int32)
     map(f -> [convert(T, MP.degree(t, v)) for v in vars, t in MP.terms(f)], F)
 end
@@ -1240,6 +1247,16 @@ function mixed_volume(args...; kwargs...)
     mv
 end
 
+"""
+    MixedCell
+
+Data structure representing a (fine) mixed cell.
+
+## Fields
+* `indices::Vector{NTuple{2, Int}}`: The columns of the support creating the mixed cell.
+* `normal::Vector{Float64}`: The inner normal vector of the lifted mixed cell.
+* `volume::Int`: The volume of the mixed cell.
+"""
 mutable struct MixedCell
     indices::Vector{NTuple{2, Int}}
     normal::Vector{Float64}
@@ -1262,6 +1279,38 @@ function Base.show(io::IO, C::MixedCell)
 end
 Base.show(io::IO, ::MIME"application/prs.juno.inline", C::MixedCell) = C
 
+"""
+    volume(C::MixedCell)
+
+Returns the volume of the mixed cell `C`.
+"""
+volume(C::MixedCell) = C.volume
+
+"""
+    indices(C::MixedCell)
+
+Returns the indices of the support creating the mixed cell.
+"""
+indices(C::MixedCell) = C.indices
+
+"""
+    normal(C::MixedCell)
+
+The inner normal vector of the lifted mixed cell.
+"""
+normal(C::MixedCell) = C.normal
+
+"""
+    MixedCellIterator(support:Vector{<:Matrix}, lifting::Vector{<:Vector{<:Integer}})
+
+Returns an iterator over all (fine) mixed cells of the given `support` induced
+by the given `lifting`. If the lifting is not sufficiently generic the mixed cells
+induced by a sligtly perturbated lifting are computed.
+The iterator returns in each iteration a [`MixedCell`](@ref). Note that due to efficiency
+reason the same object is returned in each iteration, i.e., if you want to store the computed
+cells you need to make a `copy`. Alternatively you can also use [`mixed_cells`](@ref)
+to compute all mixed cells.
+"""
 struct MixedCellIterator{LowInt, HighInt, T<:AbstractTraverser{LowInt, HighInt}}
     start_traverser::T
     target_traverser::MixedCellTableTraverser{LowInt, HighInt, LexicographicOrdering}
@@ -1294,7 +1343,9 @@ function MixedCellIterator(support::Vector{Matrix{Int32}}, lifting::Vector{Vecto
     for i = 2:length(lifting)
         append!(target_lifting, lifting[i])
     end
-    target_traverser = MixedCellTableTraverser(target_cell, A, target_lifting)
+    # set traverser to -target lifting since we compute internally in the MAX setting
+    # but expect input in MIN setting
+    target_traverser = MixedCellTableTraverser(target_cell, A, -target_lifting)
     # initial dummy cell
     cell = MixedCell(length(support))
     # cache
@@ -1305,6 +1356,9 @@ function MixedCellIterator(support::Vector{Matrix{Int32}}, lifting::Vector{Vecto
     MixedCellIterator(start_traverser, target_traverser, support, lifting, cell, D, b)
 end
 
+function Base.show(io::IO, iter::MixedCellIterator)
+    print(io, typeof(iter), "")
+end
 
 Base.IteratorSize(::Type{<:MixedCellIterator}) = Base.SizeUnknown()
 Base.IteratorEltype(::Type{<:MixedCellIterator}) = Base.HasEltype()
@@ -1410,7 +1464,10 @@ end
 """
     mixed_cells(support::Vector{<:Matrix}, lifting::Vector{<:Vector})
 
-Compute all mixed cells with respect to the given lift.
+Compute all (fine) mixed cells of the given `support` induced
+by the given `lifting`. If the lifting is not sufficiently generic the mixed cells
+induced by a sligtly perturbated lifting are computed.
+The mixed cells are stored as a [`MixedCell`](@ref).
 """
 function mixed_cells(support::Vector{<:Matrix}, lifting::Vector{<:Vector})
     iter = MixedCellIterator(support, lifting)
