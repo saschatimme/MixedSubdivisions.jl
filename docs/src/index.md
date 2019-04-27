@@ -1,6 +1,6 @@
 # Introduction
 
-[MixedSubdivisions.jl](https://github.com/JuliaHomotopyContinuation/MixedSubdivisions.jl)
+[MixedSubdivisions.jl](https://github.com/saschatimme/MixedSubdivisions.jl)
 is package for computing a (fine) mixed subdivision and the [mixed volume](https://en.wikipedia.org/wiki/Mixed_volume) of lattice polytopes.
 The mixed volume of lattice polytopes arising as Newton polytopes of a polynomial system
 gives an upper bound of the number of solutions of the system. This is the celebrated
@@ -16,7 +16,7 @@ is based on the tropical homotopy continuation algorithm by Anders Jensen descri
 
 The package can be installed via the Julia package manager
 ```julia
-pkg> add https://github.com/JuliaHomotopyContinuation/MixedSubdivisions.jl.git
+pkg> add MixedSubdivisions.jl
 ```
 
 ## Short introduction
