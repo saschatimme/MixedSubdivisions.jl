@@ -16,7 +16,7 @@ is based on the tropical homotopy continuation algorithm by Anders Jensen descri
 
 The package can be installed via the Julia package manager
 ```julia
-pkg> add MixedSubdivisions.jl
+pkg> add MixedSubdivisions
 ```
 
 ## Short introduction
