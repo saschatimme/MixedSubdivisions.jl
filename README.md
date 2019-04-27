@@ -27,10 +27,10 @@ pkg> add https://github.com/JuliaHomotopyContinuation/MixedSubdivisions.jl.git
 
 [docs-stable-img]: https://img.shields.io/badge/docs-stable-blue.svg
 [docs-latest-img]: https://img.shields.io/badge/docs-latest-blue.svg
-[docs-stable-url]: https://juliahomotopycontinuation.github.io/MixedSubdivisions.jl/stable
-[docs-latest-url]: https://juliahomotopycontinuation.github.io/MixedSubdivisions.jl/latest
+[docs-stable-url]: https://saschatimme.github.io/MixedSubdivisions.jl/stable
+[docs-latest-url]: https://saschatimme.github.io/MixedSubdivisions.jl/latest
 
-[build-img]: https://travis-ci.org/JuliaHomotopyContinuation/MixedSubdivisions.jl.svg?branch=master
-[build-url]: https://travis-ci.org/JuliaHomotopyContinuation/MixedSubdivisions.jl
-[codecov-img]: https://codecov.io/gh/juliahomotopycontinuation/MixedSubdivisions.jl/branch/master/graph/badge.svg
-[codecov-url]: https://codecov.io/gh/juliahomotopycontinuation/MixedSubdivisions.jl
+[build-img]: https://travis-ci.org/saschatimme/MixedSubdivisions.jl.svg?branch=master
+[build-url]: https://travis-ci.org/saschatimme/MixedSubdivisions.jl
+[codecov-img]: https://codecov.io/gh/saschatimme/MixedSubdivisions.jl/branch/master/graph/badge.svg
+[codecov-url]: https://codecov.io/gh/saschatimme/MixedSubdivisions.jl
