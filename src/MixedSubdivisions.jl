@@ -3,9 +3,10 @@ module MixedSubdivisions
 export mixed_volume, MixedCellIterator, MixedCell, mixed_cells, volume, normal, indices, support
     #MixedCellTable, TermOrdering, DotOrdering, LexicographicOrdering, cayley
 
+import LinearAlgebra
 import MultivariatePolynomials
 const MP = MultivariatePolynomials
-import LinearAlgebra
+import ProgressMeter
 import StaticArrays: SVector
 
 import Base: checked_add, checked_sub
@@ -1226,8 +1227,8 @@ function support(F::Vector{<:MP.AbstractPolynomialLike}, vars=MP.variables(F), T
 end
 
 """
-    mixed_volume(F::Vector{<:MP.AbstractPolynomialLike}; algorithm=:regeneration)
-    mixed_volume(𝑨::Vector{<:Matrix}; algorithm=:regeneration)
+    mixed_volume(F::Vector{<:MP.AbstractPolynomialLike}; report_progress=true, algorithm=:regeneration)
+    mixed_volume(𝑨::Vector{<:Matrix}; report_progress=true, algorithm=:regeneration)
 
 Compute the mixed volume of the given polynomial system `F` resp. represented
 by the support `𝑨`.
@@ -1235,14 +1236,19 @@ There are two possible values for `algorithm`:
 * `:total_degree`: Use the total degree homotopy algorithm described in Section 7.1
 * `:regeneration`: Use the tropical regeneration algorithm described in Section 7.2
 """
-function mixed_volume(args...; kwargs...)
+function mixed_volume(args...; report_progress=true, kwargs...)
     T = traverser(args...; kwargs...)
     mv = 0
     complete = next_cell!(T)
+    if report_progress
+        p = ProgressMeter.ProgressUnknown("Mixed volume: ")
+    end
     while !complete
         mv += mixed_cell(T).volume
+        report_progress && ProgressMeter.update!(p, mv)
         complete = next_cell!(T)
     end
+    report_progress && ProgressMeter.finish!(p)
     mv
 end
 
