@@ -1260,21 +1260,24 @@ Data structure representing a (fine) mixed cell.
 ## Fields
 * `indices::Vector{NTuple{2, Int}}`: The columns of the support creating the mixed cell.
 * `normal::Vector{Float64}`: The inner normal vector of the lifted mixed cell.
+* `β::Vector{Float64}`: The vector ``(\\min_{a \\in A_i} ⟨a,γ⟩)_i`` where ``γ`` is `normal`.
 * `volume::Int`: The volume of the mixed cell.
 """
 mutable struct MixedCell
     indices::Vector{NTuple{2, Int}}
     normal::Vector{Float64}
+    β::Vector{Float64}
     volume::Int
 end
 
 function MixedCell(n::Int, ::Type{T}=Int32) where T
     indices = [(1, 1) for _ in 1:n]
-    normal = zeros(Int, n)
-    MixedCell(indices, normal, 0)
+    normal = zeros(Float64, n)
+    β = zeros(Float64, n)
+    MixedCell(indices, normal, β, 0)
 end
 
-Base.copy(C::MixedCell) = MixedCell(copy(C.indices), copy(C.normal), C.volume)
+Base.copy(C::MixedCell) = MixedCell(copy(C.indices), copy(C.normal), copy(C.β), C.volume)
 
 function Base.show(io::IO, C::MixedCell)
     println(io, "MixedCell:")
@@ -1443,12 +1446,25 @@ function carry_over!(B::MixedCellTable, A::MixedCellTable, ::RegenerationTravers
 end
 
 function fill_cell!(iter::MixedCellIterator, mixed_cell::MixedCellTable)
-    for i in 1:length(mixed_cell.indices)
+    n = length(mixed_cell.indices)
+    for i in 1:n
         (aᵢ, bᵢ) = mixed_cell.indices[i]
         iter.cell.indices[i] = (Int(aᵢ), Int(bᵢ))
     end
     iter.cell.volume = mixed_cell.volume
     compute_normal!(iter.cell, iter)
+
+    # compute smallest dot product of the normal and the lifted support
+    γ = iter.cell.normal
+    for (i, Aᵢ) in enumerate(iter.support)
+        aᵢ = first(mixed_cell.indices[i])
+        βᵢ = Float64(iter.lifting[i][aᵢ])
+        for j in 1:n
+            βᵢ += γ[j] * Aᵢ[j, aᵢ]
+        end
+        iter.cell.β[i] = βᵢ
+    end
+
     iter.cell
 end
 
