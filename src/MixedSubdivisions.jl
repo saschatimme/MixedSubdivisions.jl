@@ -1283,7 +1283,8 @@ function Base.show(io::IO, C::MixedCell)
     println(io, "MixedCell:")
     println(io, " • volume → ", C.volume)
     println(io, " • indices → ", C.indices)
-    print(io,   " • normal → ", C.normal)
+    println(io, " • normal → ", C.normal)
+    print(io,   " • β → ", C.β)
 end
 Base.show(io::IO, ::MIME"application/prs.juno.inline", C::MixedCell) = C
 
@@ -1367,6 +1368,7 @@ end
 function Base.show(io::IO, iter::MixedCellIterator)
     print(io, typeof(iter), "")
 end
+Base.show(io::IO, ::MIME"application/prs.juno.inline", x::MixedCellIterator) = x
 
 Base.IteratorSize(::Type{<:MixedCellIterator}) = Base.SizeUnknown()
 Base.IteratorEltype(::Type{<:MixedCellIterator}) = Base.HasEltype()
