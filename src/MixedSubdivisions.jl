@@ -1,6 +1,7 @@
 module MixedSubdivisions
 
-export mixed_volume, MixedCellIterator, MixedCell, mixed_cells, volume, normal, indices, support
+export mixed_volume, MixedCellIterator, MixedCell, mixed_cells, fine_mixed_cells,
+    is_fully_mixed_cell, volume, normal, indices, support
     #MixedCellTable, TermOrdering, DotOrdering, LexicographicOrdering, cayley
 
 import LinearAlgebra
@@ -1508,5 +1509,86 @@ end
     @inbounds ind[i] = (aᵢ - m, bᵢ - m)
     ind
 end
+
+
+"""
+    fine_mixed_cells(f::Vector{<:MP.AbstractPolynomialLike}; report_progress=true)
+    fine_mixed_cells(support::Vector{<:Matrix}; report_progress=true)
+
+Compute all (fine) mixed cells of the given `support` induced
+by a generic lifting. This guarantees that all induce intial forms binomials.
+Returns a `Vector` of all mixed cells and the corresponding lifting.
+"""
+function fine_mixed_cells(f::Vector{<:MP.AbstractPolynomialLike}, lifting_sampler=gaussian_lifting_sampler; report_progress=true)
+    fine_mixed_cells(support(f), lifting_sampler)
+end
+function fine_mixed_cells(support::Vector{<:Matrix}, lifting_sampler=gaussian_lifting_sampler; report_progress=true)
+    if report_progress
+        p = ProgressMeter.ProgressUnknown(0.25, "Computing mixed cells...")
+    else
+        p = nothing
+    end
+
+
+    while true
+        lifting = map(A -> lifting_sampler(size(A,2))::Vector{Int32}, support)
+        iter = MixedCellIterator(support, lifting)
+
+        all_valid = true
+        cells = MixedCell[]
+        ncells = 0
+        mv = 0
+        for cell in iter
+            if !is_fully_mixed_cell(cell, support, lifting)
+                all_valid = false
+                break
+            end
+            ncells += 1
+            mv += cell.volume
+            push!(cells, copy(cell))
+            if p !== nothing
+                ProgressMeter.update!(p, ncells; showvalues=((:mixed_volume, mv),))
+            end
+        end
+        if all_valid
+            p !== nothing && ProgressMeter.finish!(p; showvalues=((:mixed_volume, mv),))
+            return cells, lifting
+        end
+    end
+end
+
+uniform_lifting_sampler(nterms) = rand(Int32(-2^15):Int32(2^15), nterms)
+function gaussian_lifting_sampler(nterms)
+    N = 2^16
+    round.(Int32, randn(nterms) * N)
+end
+
+"""
+    is_fully_mixed_cell(cell::MixedCell, support, lifting)
+
+Checks whether for a given mixed cell `cell` the induced initial system
+only consists of binomials.
+"""
+function is_fully_mixed_cell(cell::MixedCell, support, lifting)
+    n = length(support)
+    for i in 1:n
+        Aᵢ = support[i]
+        wᵢ = lifting[i]
+
+        for j in 1:length(wᵢ)
+            βⱼ = Float64(wᵢ[j])
+            for k in 1:n
+                βⱼ += Aᵢ[k,j] * cell.normal[k]
+            end
+            Δ = abs(cell.β[i] - βⱼ)
+            if (Δ < 1e-12 || isapprox(cell.β[i], βⱼ; rtol=1e-7)) &&
+                !(j == cell.indices[i][1] || j == cell.indices[i][2])
+                return false
+            end
+        end
+    end
+    true
+end
+
 
 end # module
