@@ -1228,8 +1228,8 @@ function support(F::Vector{<:MP.AbstractPolynomialLike}, vars=MP.variables(F), T
 end
 
 """
-    mixed_volume(F::Vector{<:MP.AbstractPolynomialLike}; report_progress=true, algorithm=:regeneration)
-    mixed_volume(𝑨::Vector{<:Matrix}; report_progress=true, algorithm=:regeneration)
+    mixed_volume(F::Vector{<:MP.AbstractPolynomialLike}; show_progress=true, algorithm=:regeneration)
+    mixed_volume(𝑨::Vector{<:Matrix}; show_progress=true, algorithm=:regeneration)
 
 Compute the mixed volume of the given polynomial system `F` resp. represented
 by the support `𝑨`.
@@ -1237,19 +1237,19 @@ There are two possible values for `algorithm`:
 * `:total_degree`: Use the total degree homotopy algorithm described in Section 7.1
 * `:regeneration`: Use the tropical regeneration algorithm described in Section 7.2
 """
-function mixed_volume(args...; report_progress=true, kwargs...)
+function mixed_volume(args...; show_progress=true, kwargs...)
     T = traverser(args...; kwargs...)
     mv = 0
     complete = next_cell!(T)
-    if report_progress
+    if show_progress
         p = ProgressMeter.ProgressUnknown("Mixed volume: ")
     end
     while !complete
         mv += mixed_cell(T).volume
-        report_progress && ProgressMeter.update!(p, mv)
+        show_progress && ProgressMeter.update!(p, mv)
         complete = next_cell!(T)
     end
-    report_progress && ProgressMeter.finish!(p)
+    show_progress && ProgressMeter.finish!(p)
     mv
 end
 
@@ -1512,18 +1512,18 @@ end
 
 
 """
-    fine_mixed_cells(f::Vector{<:MP.AbstractPolynomialLike}; report_progress=true)
-    fine_mixed_cells(support::Vector{<:Matrix}; report_progress=true)
+    fine_mixed_cells(f::Vector{<:MP.AbstractPolynomialLike}; show_progress=true)
+    fine_mixed_cells(support::Vector{<:Matrix}; show_progress=true)
 
 Compute all (fine) mixed cells of the given `support` induced
 by a generic lifting. This guarantees that all induce intial forms binomials.
 Returns a `Vector` of all mixed cells and the corresponding lifting.
 """
-function fine_mixed_cells(f::Vector{<:MP.AbstractPolynomialLike}, lifting_sampler=gaussian_lifting_sampler; report_progress=true)
+function fine_mixed_cells(f::Vector{<:MP.AbstractPolynomialLike}, lifting_sampler=gaussian_lifting_sampler; show_progress=true)
     fine_mixed_cells(support(f), lifting_sampler)
 end
-function fine_mixed_cells(support::Vector{<:Matrix}, lifting_sampler=gaussian_lifting_sampler; report_progress=true)
-    if report_progress
+function fine_mixed_cells(support::Vector{<:Matrix}, lifting_sampler=gaussian_lifting_sampler; show_progress=true)
+    if show_progress
         p = ProgressMeter.ProgressUnknown(0.25, "Computing mixed cells...")
     else
         p = nothing
