@@ -95,4 +95,11 @@ using Test
 		    end
 		end
 	end
+
+	@testset "Fine mixed cells" begin
+		f = equations(cyclic(7))
+		cells, lift = fine_mixed_cells(f)
+		@test sum(c -> c.volume, cells) == 924
+		@test lift isa Vector{Vector{Int32}}
+	end
 end
