@@ -435,7 +435,10 @@ function compute_inequality_dots!(cell::MixedCellTable{Int32,HighInt}, τ, τ_bo
         _compute_dot!(cell.intermediate_dot, cell, τ, HighInt)
         # Assign final result. Throws an InexactError in case of an overflow
         @inbounds for k in 1:m
-            cell.dot[k] = cell.intermediate_dot[k]
+            # We can ignore the case that
+            #   cell.intermediate_dot[k] > typemax(Int32)
+            # since a positive dot product is irrelevant anyway
+            cell.dot[k] = min(cell.intermediate_dot[k], typemax(Int32))
         end
     end
 
