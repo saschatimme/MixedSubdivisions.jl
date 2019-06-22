@@ -1520,7 +1520,8 @@ end
 
 Compute all (fine) mixed cells of the given `support` induced
 by a generic lifting. This guarantees that all induce intial forms binomials.
-Returns a `Vector` of all mixed cells and the corresponding lifting.
+Returns a `Vector` of all mixed cells and the corresponding lifting or `nothing` if the algorithm
+wasn't able to compute fine mixed cells. This can happen due to some current technical limitations.
 """
 function fine_mixed_cells(f::Vector{<:MP.AbstractPolynomialLike}, lifting_sampler=gaussian_lifting_sampler; show_progress=true)
     fine_mixed_cells(support(f), lifting_sampler)

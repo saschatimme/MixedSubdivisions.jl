@@ -1,7 +1,7 @@
 name = "MixedSubdivisions"
 uuid = "291d046c-3347-11e9-1e74-c3d251d406c6"
 authors = ["Sascha Timme <sascha.timme@gmail.com>"]
-version = "0.2.0"
+version = "0.3.0"
 
 [deps]
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
@@ -11,8 +11,8 @@ StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 
 [compat]
 MultivariatePolynomials = "^0.2.8"
-ProgressMeter = "^0.8, ^0.9"
-StaticArrays = "^0.10"
+ProgressMeter = "^0.8, ^0.9, ^1.0"
+StaticArrays = "^0.9, ^0.10, ^0.11"
 
 [extras]
 PolynomialTestSystems = "4c526841-e1e8-562c-bfa9-9f39d642e243"
