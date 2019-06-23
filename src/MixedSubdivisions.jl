@@ -1520,7 +1520,8 @@ end
 
 Compute all (fine) mixed cells of the given `support` induced
 by a generic lifting. This guarantees that all induce intial forms binomials.
-Returns a `Vector` of all mixed cells and the corresponding lifting.
+Returns a `Vector` of all mixed cells and the corresponding lifting or `nothing` if the algorithm
+wasn't able to compute fine mixed cells. This can happen due to some current technical limitations.
 """
 function fine_mixed_cells(f::Vector{<:MP.AbstractPolynomialLike}, lifting_sampler=gaussian_lifting_sampler; show_progress=true)
     fine_mixed_cells(support(f), lifting_sampler)
@@ -1532,30 +1533,37 @@ function fine_mixed_cells(support::Vector{<:Matrix}, lifting_sampler=gaussian_li
         p = nothing
     end
 
+    try
+        while true
+            lifting = map(A -> lifting_sampler(size(A,2))::Vector{Int32}, support)
+            iter = MixedCellIterator(support, lifting)
 
-    while true
-        lifting = map(A -> lifting_sampler(size(A,2))::Vector{Int32}, support)
-        iter = MixedCellIterator(support, lifting)
-
-        all_valid = true
-        cells = MixedCell[]
-        ncells = 0
-        mv = 0
-        for cell in iter
-            if !is_fully_mixed_cell(cell, support, lifting)
-                all_valid = false
-                break
+            all_valid = true
+            cells = MixedCell[]
+            ncells = 0
+            mv = 0
+            for cell in iter
+                if !is_fully_mixed_cell(cell, support, lifting)
+                    all_valid = false
+                    break
+                end
+                ncells += 1
+                mv += cell.volume
+                push!(cells, copy(cell))
+                if p !== nothing
+                    ProgressMeter.update!(p, ncells; showvalues=((:mixed_volume, mv),))
+                end
             end
-            ncells += 1
-            mv += cell.volume
-            push!(cells, copy(cell))
-            if p !== nothing
-                ProgressMeter.update!(p, ncells; showvalues=((:mixed_volume, mv),))
+            if all_valid
+                p !== nothing && ProgressMeter.finish!(p; showvalues=((:mixed_volume, mv),))
+                return cells, lifting
             end
         end
-        if all_valid
-            p !== nothing && ProgressMeter.finish!(p; showvalues=((:mixed_volume, mv),))
-            return cells, lifting
+    catch e
+        if isa(e, InexactError) || isa(e, SingularException)
+            return nothing
+        else
+            rethrow(e)
         end
     end
 end
