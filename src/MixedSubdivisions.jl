@@ -1207,6 +1207,7 @@ Base.show(io::IO, MVC::MixedVolumeCounter) = print(io, "MixedVolume: $(MVC.volum
 
 traverser(Aᵢ::Matrix...; kwargs...) = traverser(Aᵢ; kwargs...)
 function traverser(As::Vector{<:Matrix}; algorithm=:regeneration)
+    length(As) == size(As[1], 1) || throw(ArgumentError("Number of supports and number of variables doesn't match."))
     if algorithm == :regeneration
         RegenerationTraverser(As)
     elseif algorithm == :total_degree
@@ -1241,19 +1242,27 @@ There are two possible values for `algorithm`:
 * `:regeneration`: Use the tropical regeneration algorithm described in Section 7.2
 """
 function mixed_volume(args...; show_progress=true, kwargs...)
-    T = traverser(args...; kwargs...)
-    mv = 0
-    complete = next_cell!(T)
-    if show_progress
-        p = ProgressMeter.ProgressUnknown("Mixed volume: ")
-    end
-    while !complete
-        mv += mixed_cell(T).volume
-        show_progress && ProgressMeter.update!(p, mv)
+    try
+        T = traverser(args...; kwargs...)
+        mv = 0
         complete = next_cell!(T)
+        if show_progress
+            p = ProgressMeter.ProgressUnknown("Mixed volume: ")
+        end
+        while !complete
+            mv += mixed_cell(T).volume
+            show_progress && ProgressMeter.update!(p, mv)
+            complete = next_cell!(T)
+        end
+        show_progress && ProgressMeter.finish!(p)
+        mv
+    catch e
+        if isa(e, InexactError)
+            throw(OverflowError("Mixed volume cannot since an integer overflow occured."))
+        else
+            rethrow(e)
+        end
     end
-    show_progress && ProgressMeter.finish!(p)
-    mv
 end
 
 """
@@ -1497,8 +1506,15 @@ induced by a sligtly perturbated lifting are computed.
 The mixed cells are stored as a [`MixedCell`](@ref).
 """
 function mixed_cells(support::Vector{<:Matrix}, lifting::Vector{<:Vector})
-    iter = MixedCellIterator(support, lifting)
-    [copy(c) for c in iter]
+    try
+        return [copy(c) for c in MixedCellIterator(support, lifting)]
+    catch e
+        if isa(e, InexactError)
+            throw(OverflowError("Mixed cells cannot be computed for this lift since an integer overflow occured."))
+        else
+            rethrow(e)
+        end
+    end
 end
 
 @inline function shift_indices!(ind::Vector{<:NTuple{2, <:Integer}}, m)
@@ -1560,7 +1576,7 @@ function fine_mixed_cells(support::Vector{<:Matrix}, lifting_sampler=gaussian_li
             end
         end
     catch e
-        if isa(e, InexactError) || isa(e, SingularException)
+        if isa(e, InexactError) || isa(e, LinearAlgebra.SingularException)
             return nothing
         else
             rethrow(e)
