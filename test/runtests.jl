@@ -1,6 +1,8 @@
 using MixedSubdivisions
 const MS = MixedSubdivisions
-import PolynomialTestSystems: equations, cyclic, ipp2
+import MultivariatePolynomials
+const MP = MultivariatePolynomials
+import PolynomialTestSystems: equations, cyclic, ipp2, cyclooctane
 using Test
 
 @testset "MixedSubdivisions" begin
@@ -101,5 +103,15 @@ using Test
 		cells, lift = fine_mixed_cells(f)
 		@test sum(c -> c.volume, cells) == 924
 		@test lift isa Vector{Vector{Int32}}
+	end
+
+	@testset "Overflow error messages" begin
+		f = equations(cyclooctane())
+		@test_throws ArgumentError MS.mixed_volume(f)
+		F = [f; randn(2, 18) * [MP.variables(f);1]]
+		A = support(F)
+		lifting = map(Ai -> MS.gaussian_lifting_sampler(size(Ai,2)), A)
+		@test_throws OverflowError mixed_cells(A, lifting)
+		@test fine_mixed_cells(F) === nothing
 	end
 end
