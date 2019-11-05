@@ -10,6 +10,7 @@ ProgressMeter = "92933f4c-e287-5a05-a399-4b506db050ca"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 
 [compat]
+julia = "1"
 MultivariatePolynomials = "^0.2.8, ^0.3"
 ProgressMeter = "^0.8, ^0.9, ^1.0"
 StaticArrays = "^0.9, ^0.10, ^0.11, ^0.12"
