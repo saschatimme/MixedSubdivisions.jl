@@ -1438,6 +1438,9 @@ function carry_over!(B::MixedCellTable, A::MixedCellTable, ::TotalDegreeTraverse
             B.circuit_table[off + j, k] = A.circuit_table[A_off + j, k]
         end
     end
+
+    compute_table_col_bound!(B)
+
     B
 end
 function carry_over!(B::MixedCellTable, A::MixedCellTable, ::RegenerationTraverser)
@@ -1457,6 +1460,9 @@ function carry_over!(B::MixedCellTable, A::MixedCellTable, ::RegenerationTravers
             B.circuit_table[off + j, k] = A.circuit_table[A_off + j, k]
         end
     end
+
+    compute_table_col_bound!(B)
+
     B
 end
 
