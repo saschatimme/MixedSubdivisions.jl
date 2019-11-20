@@ -360,11 +360,12 @@ function fill_circuit_table!(
     x = zeros(2n)
     y, b, b̂ = zeros(I, 2n), zeros(I, 2n), zeros(I, 2n)
     # We need to compute the initial circuits from scratch
-    D⁻¹ = LinearAlgebra.inv(lu)
     for ind in indexing
         # compute a circuit
-        b .= cayley[:, ind.cayley_index]
-        LinearAlgebra.mul!(x, D⁻¹, b)
+        for i = 1:2n
+            b[i] = cayley[i, ind.cayley_index]
+        end
+        LinearAlgebra.ldiv!(x, lu, b)
         x .*= volume
         y .= round.(I, x)
         # verify that we have a correct circuit
