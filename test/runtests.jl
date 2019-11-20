@@ -36,30 +36,30 @@ using Test
         cell = MS.MixedCellTable(mixed_cell_indices, A, indexing)
         @test cell.volume == 3
         @test cell.circuit_table == [1 2; 3 0; 0 0; 1 -1; 0 3; 1 2; 0 0; -2 -1]
-        ineq = MS.first_violated_inequality(cell, v, ord)
+        ineq = MS.first_violated_inequality(cell, v, ord, typemax(Int32))
         @test ineq.config_index == 1
         @test ineq.col_index == 4
 
-        @test MS.exchange_column(cell, MS.exchange_first, ineq) == MS.MixedCellTable(
+        @test MS.exchange_column(cell, MS.exchange_first, ineq, 8) == MS.MixedCellTable(
             [(4, 3), (1, 3)],
             A,
-            indexing,
+            indexing
         )
-        @test MS.exchange_column(cell, MS.exchange_second, ineq) == MS.MixedCellTable(
+        @test MS.exchange_column(cell, MS.exchange_second, ineq, 8) == MS.MixedCellTable(
             [(2, 4), (1, 3)],
             A,
             indexing,
         )
 
         ind_back = MS.reverse_index(ineq, cell, MS.exchange_second)
-        cell2 = MS.exchange_column(cell, MS.exchange_second, ineq)
+        cell2 = MS.exchange_column(cell, MS.exchange_second, ineq, 8)
         @test cell2.volume == 2
-        @test cell == MS.exchange_column(cell2, MS.exchange_second, ind_back)
+        @test cell == MS.exchange_column(cell2, MS.exchange_second, ind_back, 8)
 
         ind_back = MS.reverse_index(ineq, cell, MS.exchange_first)
-        cell2 = MS.exchange_column(cell, MS.exchange_first, ineq)
+        cell2 = MS.exchange_column(cell, MS.exchange_first, ineq, 8)
         @test cell2.volume == 1
-        @test cell == MS.exchange_column(cell2, MS.exchange_first, ind_back)
+        @test cell == MS.exchange_column(cell2, MS.exchange_first, ind_back, 8)
     end
 
     @testset "Mixed Volume" begin
@@ -121,8 +121,10 @@ using Test
         F = [f; randn(2, 18) * [MP.variables(f); 1]]
         A = support(F)
         lifting = map(Ai -> MS.gaussian_lifting_sampler(size(Ai, 2)), A)
-        @test_throws OverflowError mixed_cells(A, lifting)
-        @test fine_mixed_cells(F) === nothing
+        cells = mixed_cells(A, lifting)
+        @test all(c -> is_fully_mixed_cell(c, A, lifting), cells)
+        @test sum(volume, cells) == 32768
+        @test sum(volume, first(fine_mixed_cells(F))) == 32768
     end
 
     @testset "Bugfix#1" begin
@@ -188,5 +190,6 @@ using Test
         A = support(F)
         cells = mixed_cells(A, lift)
         @test !isempty(cells)
+        sum(volume, cells) == 32768
     end
 end
