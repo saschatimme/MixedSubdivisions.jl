@@ -1768,14 +1768,14 @@ wasn't able to compute fine mixed cells. This can happen due to some current tec
 """
 function fine_mixed_cells(
     f::Vector{<:MP.AbstractPolynomialLike},
-    lifting_sampler = gaussian_lifting_sampler;
+    lifting_sampler = uniform_lifting_sampler;
     show_progress = true,
 )
     fine_mixed_cells(support(f), lifting_sampler)
 end
 function fine_mixed_cells(
     support::Vector{<:Matrix},
-    lifting_sampler = gaussian_lifting_sampler;
+    lifting_sampler = uniform_lifting_sampler;
     show_progress = true,
 )
     if show_progress
@@ -1822,10 +1822,9 @@ function fine_mixed_cells(
     end
 end
 
-uniform_lifting_sampler(nterms) = rand(Int32(-2^15):Int32(2^15), nterms)
+uniform_lifting_sampler(nterms) = rand(Int32(-2^11):Int32(2^11), nterms)
 function gaussian_lifting_sampler(nterms)
-    N = 2^16
-    round.(Int32, randn(nterms) * N)
+    round.(Int32, randn(nterms) * 2^12)
 end
 
 end # module

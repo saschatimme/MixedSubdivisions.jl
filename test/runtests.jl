@@ -120,7 +120,7 @@ using Test
         @test_throws ArgumentError MS.mixed_volume(f)
         F = [f; randn(2, 18) * [MP.variables(f); 1]]
         A = support(F)
-        lifting = map(Ai -> MS.gaussian_lifting_sampler(size(Ai, 2)), A)
+        lifting = map(Ai -> rand(-Int32(2^20):Int32(2^20), size(Ai, 2)), A)
         cells = mixed_cells(A, lifting)
         @test_deprecated is_fully_mixed_cell(first(cells), A, lifting)
         @test all(is_fine, cells)
