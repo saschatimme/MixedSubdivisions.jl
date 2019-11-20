@@ -5,7 +5,7 @@ export mixed_volume,
        MixedCell,
        mixed_cells,
        fine_mixed_cells,
-       is_fully_mixed_cell,
+       is_fine,
        volume,
        normal,
        indices,
@@ -1450,6 +1450,7 @@ mutable struct MixedCell
     indices::Vector{NTuple{2,Int}}
     normal::Vector{Float64}
     β::Vector{Float64}
+    is_fine::Bool
     volume::Int
 end
 
@@ -1457,16 +1458,19 @@ function MixedCell(n::Int, ::Type{T} = Int32) where {T}
     indices = [(1, 1) for _ = 1:n]
     normal = zeros(Float64, n)
     β = zeros(Float64, n)
-    MixedCell(indices, normal, β, 0)
+    is_fine = false
+    MixedCell(indices, normal, β, is_fine, 0)
 end
 
-Base.copy(C::MixedCell) = MixedCell(copy(C.indices), copy(C.normal), copy(C.β), C.volume)
+Base.copy(C::MixedCell) =
+    MixedCell(copy(C.indices), copy(C.normal), copy(C.β), copy(C.is_fine), C.volume)
 
 function Base.show(io::IO, C::MixedCell)
     println(io, "MixedCell:")
     println(io, " • volume → ", C.volume)
     println(io, " • indices → ", C.indices)
     println(io, " • normal → ", C.normal)
+    println(io, " • is_fine → ", C.is_fine)
     print(io, " • β → ", C.β)
 end
 Base.show(io::IO, ::MIME"application/prs.juno.inline", C::MixedCell) = C
@@ -1491,6 +1495,15 @@ indices(C::MixedCell) = C.indices
 The inner normal vector of the lifted mixed cell.
 """
 normal(C::MixedCell) = C.normal
+
+"""
+    is_fine(cell::MixedCell)
+
+Checks whether for a given mixed cell `cell` whether this is a fine mixed cell.
+"""
+is_fine(cell::MixedCell) = cell.is_fine
+
+@deprecate(is_fully_mixed_cell(cell::MixedCell, support, lifting), is_fine(cell))
 
 """
     MixedCellIterator(support:Vector{<:Matrix}, lifting::Vector{<:Vector{<:Integer}})
@@ -1651,25 +1664,27 @@ function carry_over!(B::MixedCellTable, A::MixedCellTable, ::RegenerationTravers
     B
 end
 
-function fill_cell!(iter::MixedCellIterator, mixed_cell::MixedCellTable)
-    n = length(mixed_cell.indices)
+function fill_cell!(iter::MixedCellIterator, mixed_cell_table::MixedCellTable)
+    cell = iter.cell
+    n = length(mixed_cell_table.indices)
     for i = 1:n
-        (aᵢ, bᵢ) = mixed_cell.indices[i]
+        (aᵢ, bᵢ) = mixed_cell_table.indices[i]
         iter.cell.indices[i] = (Int(aᵢ), Int(bᵢ))
     end
-    iter.cell.volume = mixed_cell.volume
-    compute_normal!(iter.cell, iter)
+    cell.volume = mixed_cell_table.volume
+    compute_normal!(cell, iter)
 
     # compute smallest dot product of the normal and the lifted support
-    γ = iter.cell.normal
+    γ = cell.normal
     for (i, Aᵢ) in enumerate(iter.support)
-        aᵢ = first(mixed_cell.indices[i])
+        aᵢ = first(mixed_cell_table.indices[i])
         βᵢ = Float64(iter.lifting[i][aᵢ])
         for j = 1:n
             βᵢ += γ[j] * Aᵢ[j, aᵢ]
         end
         iter.cell.β[i] = βᵢ
     end
+    cell.is_fine = is_fine(cell, iter.support, iter.lifting)
 
     iter.cell
 end
@@ -1686,6 +1701,27 @@ function compute_normal!(cell::MixedCell, iter::MixedCellIterator)
 
     LinearAlgebra.ldiv!(LinearAlgebra.generic_lufact!(iter.D), iter.b)
     cell.normal .= iter.b
+end
+
+function is_fine(cell::MixedCell, support, lifting)
+    n = length(support)
+    for i = 1:n
+        Aᵢ = support[i]
+        wᵢ = lifting[i]
+
+        for j = 1:length(wᵢ)
+            βⱼ = Float64(wᵢ[j])
+            for k = 1:n
+                βⱼ += Aᵢ[k, j] * cell.normal[k]
+            end
+            Δ = abs(cell.β[i] - βⱼ)
+            if (Δ < 1e-12 || isapprox(cell.β[i], βⱼ; rtol = 1e-7)) &&
+               !(j == cell.indices[i][1] || j == cell.indices[i][2])
+                return false
+            end
+        end
+    end
+    true
 end
 
 """
@@ -1758,7 +1794,7 @@ function fine_mixed_cells(
             ncells = 0
             mv = 0
             for cell in iter
-                if !is_fully_mixed_cell(cell, support, lifting)
+                if !is_fine(cell)
                     all_valid = false
                     break
                 end
@@ -1791,33 +1827,5 @@ function gaussian_lifting_sampler(nterms)
     N = 2^16
     round.(Int32, randn(nterms) * N)
 end
-
-"""
-    is_fully_mixed_cell(cell::MixedCell, support, lifting)
-
-Checks whether for a given mixed cell `cell` the induced initial system
-only consists of binomials.
-"""
-function is_fully_mixed_cell(cell::MixedCell, support, lifting)
-    n = length(support)
-    for i = 1:n
-        Aᵢ = support[i]
-        wᵢ = lifting[i]
-
-        for j = 1:length(wᵢ)
-            βⱼ = Float64(wᵢ[j])
-            for k = 1:n
-                βⱼ += Aᵢ[k, j] * cell.normal[k]
-            end
-            Δ = abs(cell.β[i] - βⱼ)
-            if (Δ < 1e-12 || isapprox(cell.β[i], βⱼ; rtol = 1e-7)) &&
-               !(j == cell.indices[i][1] || j == cell.indices[i][2])
-                return false
-            end
-        end
-    end
-    true
-end
-
 
 end # module

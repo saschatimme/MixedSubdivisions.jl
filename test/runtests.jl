@@ -122,7 +122,8 @@ using Test
         A = support(F)
         lifting = map(Ai -> MS.gaussian_lifting_sampler(size(Ai, 2)), A)
         cells = mixed_cells(A, lifting)
-        @test all(c -> is_fully_mixed_cell(c, A, lifting), cells)
+        @test_deprecated is_fully_mixed_cell(first(cells), A, lifting)
+        @test all(is_fine, cells)
         @test sum(volume, cells) == 32768
         @test sum(volume, first(fine_mixed_cells(F))) == 32768
     end

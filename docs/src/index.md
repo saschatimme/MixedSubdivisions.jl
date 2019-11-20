@@ -66,10 +66,12 @@ mixed_cells(A, [w₁, w₂])
  • volume → 3
  • indices → Tuple{Int64,Int64}[(2, 3), (4, 2)]
  • normal → [-2.66667, -1.33333]
+ • is_fine → true
  MixedCell:
  • volume → 1
  • indices → Tuple{Int64,Int64}[(3, 1), (1, 2)]
  • normal → [-6.0, -2.0]
+ • is_fine → true
 ```     
 
 Now let's compare that to another lift.
@@ -84,14 +86,17 @@ mixed_cells(A, [v₁, v₂])
  • volume → 2
  • indices → Tuple{Int64,Int64}[(2, 1), (4, 2)]
  • normal → [-2.5, -1.5]
+ • is_fine → true
  MixedCell:
  • volume → 1
  • indices → Tuple{Int64,Int64}[(3, 1), (2, 4)]
  • normal → [-3.0, -1.0]
+ • is_fine → true
  MixedCell:
  • volume → 1
  • indices → Tuple{Int64,Int64}[(3, 1), (1, 2)]
  • normal → [-5.0, -1.0]
+ • is_fine → true
 ```
 
 If you don't want to wait until all mixed cells got computed you can also use the
@@ -106,14 +111,17 @@ MixedCell:
  • volume → 2
  • indices → Tuple{Int64,Int64}[(2, 1), (4, 2)]
  • normal → [-2.5, -1.5]
+ • is_fine → true
 MixedCell:
  • volume → 1
  • indices → Tuple{Int64,Int64}[(3, 1), (2, 4)]
  • normal → [-3.0, -1.0]
+ • is_fine → true
 MixedCell:
  • volume → 1
  • indices → Tuple{Int64,Int64}[(3, 1), (1, 2)]
  • normal → [-5.0, -1.0]
+ • is_fine → true
 ```
 
 
@@ -125,6 +133,7 @@ MixedCell
 volume
 normal
 indices
+is_fine
 MixedCellIterator
 mixed_cells
 fine_mixed_cells
