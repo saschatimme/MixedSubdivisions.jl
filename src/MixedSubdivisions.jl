@@ -10,7 +10,6 @@ export mixed_volume,
        normal,
        indices,
        support
-    #MixedCellTable, TermOrdering, DotOrdering, LexicographicOrdering, cayley
 
 import LinearAlgebra
 import MultivariatePolynomials
