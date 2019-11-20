@@ -66,10 +66,12 @@ mixed_cells(A, [w₁, w₂])
  • volume → 3
  • indices → Tuple{Int64,Int64}[(2, 3), (4, 2)]
  • normal → [-2.66667, -1.33333]
+ • is_fine → true
  MixedCell:
  • volume → 1
  • indices → Tuple{Int64,Int64}[(3, 1), (1, 2)]
  • normal → [-6.0, -2.0]
+ • is_fine → true
 ```     
 
 Now let's compare that to another lift.
@@ -84,14 +86,17 @@ mixed_cells(A, [v₁, v₂])
  • volume → 2
  • indices → Tuple{Int64,Int64}[(2, 1), (4, 2)]
  • normal → [-2.5, -1.5]
+ • is_fine → true
  MixedCell:
  • volume → 1
  • indices → Tuple{Int64,Int64}[(3, 1), (2, 4)]
  • normal → [-3.0, -1.0]
+ • is_fine → true
  MixedCell:
  • volume → 1
  • indices → Tuple{Int64,Int64}[(3, 1), (1, 2)]
  • normal → [-5.0, -1.0]
+ • is_fine → true
 ```
 
 If you don't want to wait until all mixed cells got computed you can also use the
@@ -106,27 +111,60 @@ MixedCell:
  • volume → 2
  • indices → Tuple{Int64,Int64}[(2, 1), (4, 2)]
  • normal → [-2.5, -1.5]
+ • is_fine → true
 MixedCell:
  • volume → 1
  • indices → Tuple{Int64,Int64}[(3, 1), (2, 4)]
  • normal → [-3.0, -1.0]
+ • is_fine → true
 MixedCell:
  • volume → 1
  • indices → Tuple{Int64,Int64}[(3, 1), (1, 2)]
  • normal → [-5.0, -1.0]
+ • is_fine → true
 ```
 
+Also if you just want to generate a random lift such that a fine mixed subdivision is obtained you can use the [`fine_mixed_cells`](@ref) function.
+
+```julia
+cells, lift = fine_mixed_cells(A);
+cells
+```
+```
+2-element Array{MixedCell,1}:
+ MixedCell:
+ • volume → 2
+ • indices → Tuple{Int64,Int64}[(2, 1), (4, 1)]
+ • normal → [-1762.5, -894.5]
+ • is_fine → true
+ • β → [-3674.0, -1517.0]
+ MixedCell:
+ • volume → 2
+ • indices → Tuple{Int64,Int64}[(3, 1), (1, 4)]
+ • normal → [-1762.5, 568.0]
+ • is_fine → true
+ • β → [-2211.5, -1517.0]
+```
+```julia
+lift
+```
+```
+2-element Array{Array{Int32,1},1}:
+ [-1017, -1885, -449, -1914]
+ [2008, 1735, 538, -1517]
+```
 
 ## API
 
 ```@docs
 mixed_volume
+mixed_cells
+fine_mixed_cells
 MixedCell
 volume
 normal
 indices
+is_fine
 MixedCellIterator
-mixed_cells
-fine_mixed_cells
 support
 ```
