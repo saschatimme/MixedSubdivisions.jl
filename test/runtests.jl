@@ -113,6 +113,8 @@ using Test
         cells, lift = fine_mixed_cells(f)
         @test sum(c -> c.volume, cells) == 924
         @test lift isa Vector{Vector{Int32}}
+
+        @test isnothing(fine_mixed_cells(f, max_tries = 0))
     end
 
     @testset "Overflow error messages" begin
