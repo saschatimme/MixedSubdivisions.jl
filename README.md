@@ -2,7 +2,7 @@
 
 | **Documentation** | **Build Status** |
 |:-----------------:|:----------------:|
-| [![][docs-stable-img]][docs-stable-url] | [![Build Status][build-img]][build-url] |
+| [![][docs-stable-img]][docs-stable-url] | ![Run tests](https://github.com/saschatimme/MixedSubdivisions.jl/workflows/Run%20tests/badge.svg) |
 | [![][docs-latest-img]][docs-latest-url] | [![Codecov branch][codecov-img]][codecov-url] |
 
 
@@ -30,7 +30,5 @@ pkg> add MixedSubdivisions
 [docs-stable-url]: https://saschatimme.github.io/MixedSubdivisions.jl/stable
 [docs-latest-url]: https://saschatimme.github.io/MixedSubdivisions.jl/latest
 
-[build-img]: https://travis-ci.org/saschatimme/MixedSubdivisions.jl.svg?branch=master
-[build-url]: https://travis-ci.org/saschatimme/MixedSubdivisions.jl
 [codecov-img]: https://codecov.io/gh/saschatimme/MixedSubdivisions.jl/branch/master/graph/badge.svg
 [codecov-url]: https://codecov.io/gh/saschatimme/MixedSubdivisions.jl
