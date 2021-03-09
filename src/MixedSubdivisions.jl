@@ -1787,16 +1787,23 @@ function fine_mixed_cells(
 
     try
         ntries = 0
+        lifting = nothing
         while ntries < max_tries
             ntries += 1
-            lifting = map(A -> lifting_sampler(size(A, 2))::Vector{Int32}, support)
+            # Try two versions to make a non-breaking api change
+            try
+                lifting = map(A -> lifting_sampler(size(A, 2), ntries)::Vector{Int32}, support)
+            catch
+                # deprecated
+                lifting = map(A -> lifting_sampler(size(A, 2))::Vector{Int32}, support)
+            end
             iter = MixedCellIterator(support, lifting)
 
             all_valid = true
             cells = MixedCell[]
             ncells = 0
             mv = 0
-            for cell in iter
+            for (k, cell) in enumerate(iter)
                 if !is_fine(cell)
                     all_valid = false
                     break
@@ -1826,9 +1833,9 @@ function fine_mixed_cells(
     end
 end
 
-uniform_lifting_sampler(nterms) = rand(Int32(-2^11):Int32(2^11), nterms)
-function gaussian_lifting_sampler(nterms)
-    round.(Int32, randn(nterms) * 2^12)
+uniform_lifting_sampler(nterms, attempt = 1) = rand(Int32(-2^(10+attempt)):Int32(2^(10+attempt)), nterms)
+function gaussian_lifting_sampler(nterms, attempt = 1)
+    round.(Int32, randn(nterms) * 2^(11+attempt))
 end
 
 end # module
