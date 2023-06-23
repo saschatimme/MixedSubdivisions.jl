@@ -12,8 +12,7 @@ export mixed_volume,
        support
 
 import LinearAlgebra
-import MultivariatePolynomials
-const MP = MultivariatePolynomials
+import MultivariatePolynomials as MP
 import ProgressMeter
 import StaticArrays: SVector
 
