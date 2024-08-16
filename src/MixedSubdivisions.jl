@@ -1779,7 +1779,7 @@ function fine_mixed_cells(
     max_tries = 10
 )
     if show_progress
-        p = ProgressMeter.ProgressUnknown(0.25, "Computing mixed cells...")
+        p = ProgressMeter.ProgressUnknown(dt=0.25, desc="Computing mixed cells...")
     else
         p = nothing
     end
