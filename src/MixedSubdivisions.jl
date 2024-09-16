@@ -1415,7 +1415,7 @@ function mixed_volume(args...; show_progress = true, kwargs...)
         mv = 0
         complete = next_cell!(T)
         if show_progress
-            p = ProgressMeter.ProgressUnknown("Mixed volume: ")
+            p = ProgressMeter.ProgressUnknown(desc="Mixed volume: ")
         end
         while !complete
             mv += mixed_cell(T).volume
