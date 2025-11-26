@@ -195,4 +195,24 @@ using Test
         @test !isempty(cells)
         sum(volume, cells) == 32768
     end
+    @testset "Bugfix#30" begin
+        As = Matrix{Int64}[
+            [1 0 1 0 1 1 0; 0 1 1 0 1 1 0; 0 0 0 1 -1 0 0],
+            [1 1 0; 1 1 0; -1 0 0],
+            [0 1 0; 1 1 0; 0 0 0]
+        ]
+        weights = [
+            [2, 4, 1, 4, 5, 4, 3],
+            [1, 4, 3],
+            [5, 5, 2]
+        ]
+        @test mixed_volume(As, algorithm=:regeneration) == 3
+        @test mixed_volume(As, algorithm=:total_degree) == 3
+        cells = mixed_cells(As, weights)
+        @test length(cells) == 3
+        @test volume.(cells) == [1, 1, 1]
+        @test sort(normal.(cells)) == [[-4.0, 1.0, -3.0], [2.0, -3.0, -4.0], [3.0, -3.0, -2.0]]
+    end
+
+
 end

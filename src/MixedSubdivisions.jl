@@ -1079,6 +1079,8 @@ struct TotalDegreeTraverser <: AbstractTraverser
     traverser::MixedCellTableTraverser{LexicographicOrdering}
 end
 
+TotalDegreeTraverser(As::Vector{<:AbstractMatrix{<:Integer}}) =
+    TotalDegreeTraverser(convert(Vector{Matrix{Int32}}, As))
 function TotalDegreeTraverser(As::Vector{Matrix{Int32}})
     n = size(As[1], 1)
     L = [zeros(eltype(As[1]), n) LinearAlgebra.I]
@@ -1366,8 +1368,24 @@ end
 
 Base.show(io::IO, MVC::MixedVolumeCounter) = print(io, "MixedVolume: $(MVC.volume)")
 
+
+"""
+    normalize_supports(As::Vector{<:AbstractMatrix})
+
+For each support matrix `A` in `As`, translate the columns so that all coordinates are nonnegative.
+
+"""
+function normalize_supports(As::Vector{<:AbstractMatrix})
+    map(As) do A
+        T = eltype(A)
+        shift = min.(zero(T), vec(minimum(A, dims=2)))
+        A .- shift
+    end
+end
+
 traverser(Aᵢ::Matrix...; kwargs...) = traverser(Aᵢ; kwargs...)
 function traverser(As::Vector{<:Matrix}; algorithm = :regeneration)
+    As = normalize_supports(As)
     length(As) == size(
         As[1],
         1,
