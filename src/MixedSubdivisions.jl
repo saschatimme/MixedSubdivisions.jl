@@ -1079,6 +1079,8 @@ struct TotalDegreeTraverser <: AbstractTraverser
     traverser::MixedCellTableTraverser{LexicographicOrdering}
 end
 
+TotalDegreeTraverser(As::Vector{<:AbstractMatrix{<:Integer}}) =
+    TotalDegreeTraverser(convert(Vector{Matrix{Int32}}, As))
 function TotalDegreeTraverser(As::Vector{Matrix{Int32}})
     n = size(As[1], 1)
     L = [zeros(eltype(As[1]), n) LinearAlgebra.I]
