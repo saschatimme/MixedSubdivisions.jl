@@ -1376,7 +1376,7 @@ For each support matrix `A` in `As`, translate the columns so that all coordinat
 function normalize_supports(As::Vector{<:AbstractMatrix})
     map(As) do A
         T = eltype(A)
-        shift = min.(zero(T), vec(minimum(A, dims = 2)))
+        shift = min.(zero(T), vec(minimum(A, dims=2)))
         A .- shift
     end
 end
