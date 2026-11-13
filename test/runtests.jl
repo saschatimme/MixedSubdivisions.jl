@@ -36,6 +36,10 @@ using Test
         cell = MS.MixedCellTable(mixed_cell_indices, A, indexing)
         @test cell.volume == 3
         @test cell.circuit_table == [1 2; 3 0; 0 0; 1 -1; 0 3; 1 2; 0 0; -2 -1]
+        for I in cell.indexing
+            MS.is_valid_inquality(cell, I) || continue
+            @test MS.inequality_dot(cell, I, ord.w) == MS.inequality(cell, I)' * ord.w
+        end
         ineq = MS.first_violated_inequality(cell, v, ord, typemax(Int32))
         @test ineq.config_index == 1
         @test ineq.col_index == 4
@@ -101,6 +105,8 @@ using Test
         @test length(cells_w) == 2
         @test sum(volume, cells_w) == 4
         @test sort(volume.(cells_w)) == [1, 3]
+        @test length(collect(MixedCellIterator(A, w))) == 2
+        @test sum(c -> volume(c), MixedCellIterator(A, w; algorithm = :total_degree)) == 4
         @test all(cells_w) do c
             all(sort.(map(A_i -> A_i' * normal(c), A) .+ w)) do r
                 isapprox(r[1], r[2], atol = 1e-12)
@@ -193,7 +199,7 @@ using Test
         A = support(F)
         cells = mixed_cells(A, lift)
         @test !isempty(cells)
-        sum(volume, cells) == 32768
+        @test sum(volume, cells) == 32768
     end
     @testset "Bugfix#30" begin
         As = Matrix{Int64}[
@@ -212,6 +218,34 @@ using Test
         @test length(cells) == 3
         @test volume.(cells) == [1, 1, 1]
         @test sort(normal.(cells)) == [[-4.0, 1.0, -3.0], [2.0, -3.0, -4.0], [3.0, -3.0, -2.0]]
+    end
+
+    @testset "Overflow bounds" begin
+        # Underestimated bounds let the Int32 fast paths wrap around silently.
+        # Expected values verified by brute-force enumeration of all cells.
+        A = [
+            [0 24 12 9 4 9; 1 5 2 0 12 11; 15 6 26 24 2 23],
+            [0 25 22 0; 9 23 24 24; 14 25 11 7],
+            [16 20 18 18; 12 24 20 15; 6 28 0 30],
+        ]
+        lift = [
+            [786261, 716467, 533220, -891724, 877712, 124907],
+            [-69575, 347349, 297421, -368259],
+            [-187312, -460139, -867041, 868538],
+        ]
+        cells = mixed_cells(A, lift)
+        @test length(cells) == 11
+        @test sum(volume, cells) == 21123
+
+        A = [
+            [8 1 6 8 5 7 4 5 7; 1 7 10 8 6 5 9 10 7; 8 2 10 1 8 5 2 10 10; 4 5 6 8 6 10 7 8 7; 6 7 5 6 2 3 8 4 9],
+            [0 1 5 1 2 10 0 2 2; 9 3 9 9 8 1 0 0 6; 10 9 1 8 10 6 10 3 4; 9 5 4 9 9 3 6 7 8; 0 10 2 2 4 9 5 0 3],
+            [2 6 0 6 8 6; 5 1 1 9 9 6; 8 7 10 2 4 4; 10 2 2 10 6 9; 7 3 6 7 10 10],
+            [0 2 8 0 1 6 1 5 4; 10 0 10 0 8 0 4 6 9; 6 1 1 4 0 7 5 9 4; 1 2 5 5 9 3 5 7 8; 4 0 5 10 0 8 8 4 9],
+            [5 2 8 7 10 6 7; 4 2 9 0 10 10 9; 3 6 7 0 7 1 2; 5 0 3 8 8 10 1; 4 7 4 3 10 7 1],
+        ]
+        @test mixed_volume(A, algorithm = :regeneration) == 1119513
+        @test mixed_volume(A, algorithm = :total_degree) == 1119513
     end
 
 

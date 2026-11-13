@@ -302,7 +302,7 @@ function MixedCellTable(
     else
         volume = zero(Int32)
     end
-    table_col_bound = vec(maximum(circuit_table, dims = 1))
+    table_col_bound = vec(maximum(abs, circuit_table, dims = 1))
     rotated_column = [zero(Int32) for _ in indexing]
     rotated_in_ineq = zeros(Int32, size(circuit_table, 2))
     dot_bound = zero(Int128)
@@ -497,14 +497,14 @@ function compute_inequality_dots!(cell::MixedCellTable, τ, τ_bound = typemax(I
     elseif cell.dot_bound < typemax(Int64)
         _compute_dot!(cell.dot, cell, τ, Int64)
     else
-        _compute_dot!(cell.dot_128, cell, τ, Int64)
+        _compute_dot!(cell.dot_128, cell, τ, Int128)
         # Assign final result. Throws an InexactError in case of an overflow
-        max_128 = typemax(Int128)
+        max_64 = Int128(typemax(Int64))
         @inbounds for k = 1:m
             # We can ignore the case that
-            #   cell.intermediate_dot[k] > typemax(Int128)
+            #   cell.dot_128[k] > typemax(Int64)
             # since a positive dot product is irrelevant anyway
-            cell.dot[k] = min(cell.dot_128[k], max_128)
+            cell.dot[k] = min(cell.dot_128[k], max_64)
         end
     end
 
@@ -522,7 +522,7 @@ function _compute_dot!(result, cell, τ, ::Type{T}) where {T<:Integer}
         aᵢ, bᵢ = cell.indices[i]
         τ_aᵢ = τ[cell.indexing[i, aᵢ]]
         τ_bᵢ = τ[cell.indexing[i, bᵢ]]
-        τᵢ = T(τ_aᵢ - τ_bᵢ)
+        τᵢ = T(τ_aᵢ) - T(τ_bᵢ)
 
         if !iszero(τᵢ)
             for k = 1:m
@@ -571,13 +571,13 @@ end
     @inbounds for i = 1:length(cell.indices)
         aᵢ, bᵢ = cell.indices[i]
         τ_aᵢ, τ_bᵢ = τ[cell.indexing[i, aᵢ]], τ[cell.indexing[i, bᵢ]]
-        τᵢ = T(τ_aᵢ - τ_bᵢ)
+        τᵢ = T(τ_aᵢ) - T(τ_bᵢ)
 
         if !iszero(τᵢ)
             dot += cell.circuit_table[ineq.cayley_index, i] * τᵢ
         end
 
-        if i == ineq.col_index
+        if i == ineq.config_index
             dot += cell.volume * T(τ_bᵢ)
         end
     end
@@ -772,7 +772,12 @@ function exchange_column!(
             end
         end
 
-        table_update!(cell, d, i)
+        # bound on |rotated_column|: for exchange_second it is c - volume in configuration i
+        rc_bound = UInt64(table_col_bound[i])
+        if exchange == exchange_second
+            rc_bound += UInt64(abs(cell.volume))
+        end
+        table_update!(cell, d, rc_bound)
 
     #  the violated ineq is now an ineq at the old index
         if exchange == exchange_first
@@ -838,12 +843,11 @@ Base.@propagate_inbounds function circuit(
     end
 end
 
-@inline function table_update!(cell::MixedCellTable, d, rc_index::Integer)
+@inline function table_update!(cell::MixedCellTable, d, rc_bound::UInt64)
     rotated_column, rotated_in_ineq = cell.rotated_column, cell.rotated_in_ineq
     table, table_col_bound = cell.circuit_table, cell.table_col_bound
 
     d_bound = UInt64(abs(d))
-    rc_bound = UInt64(table_col_bound[rc_index])
 
     m, n = size(table)
 
@@ -1298,7 +1302,7 @@ function regeneration_stage_carry_over!(
             for k = 1:n
                 for j = 1:n+1
                     # we have to multiply by d sine we change the system from L to (d * L)
-                    B.circuit_table[B_off+j, k] = B.circuit_table[B_off+j, k] * d
+                    B.circuit_table[B_off+j, k] = B.circuit_table[B_off+j, k] ⊙ d
                 end
             end
 
@@ -1335,7 +1339,7 @@ function compute_table_col_bound!(M::MixedCellTable)
         for i = 1:m
             v = M.circuit_table[i, j]
             max_el = max(max_el, v)
-            min_el = max(min_el, v)
+            min_el = min(min_el, v)
         end
         M.table_col_bound[j] = max(-min_el, max_el)
     end
@@ -1344,7 +1348,8 @@ end
 
 function compute_dot_bound!(M::MixedCellTable, target_bound)
     n = Int128(nconfigurations(M.indexing))
-    M.dot_bound = Int128(target_bound) * (abs(M.volume) + n * maximum(M.table_col_bound))
+    # |dot| ≤ |τ|·vol + Σᵢ |cᵢ|·|τ_aᵢ - τ_bᵢ| + vol·|τ_bᵢ| ≤ 2|τ|·(vol + n·max|c|)
+    M.dot_bound = 2 * Int128(target_bound) * (abs(M.volume) + n * maximum(M.table_col_bound))
     M
 end
 
@@ -1594,7 +1599,7 @@ Base.show(io::IO, ::MIME"application/prs.juno.inline", x::MixedCellIterator) = x
 
 Base.IteratorSize(::Type{<:MixedCellIterator}) = Base.SizeUnknown()
 Base.IteratorEltype(::Type{<:MixedCellIterator}) = Base.HasEltype()
-Base.eltype(::MixedCellIterator) = Cell
+Base.eltype(::Type{<:MixedCellIterator}) = MixedCell
 
 @inline function Base.iterate(iter::MixedCellIterator, using_start_traverser = true)
     if using_start_traverser
@@ -1641,7 +1646,7 @@ function carry_over!(B::MixedCellTable, A::MixedCellTable, ::TotalDegreeTraverse
     n = nconfigurations(B.indexing)
 
     B.indices .= A.indices
-    shift_indices!(indices, n + 1)
+    shift_indices!(B.indices, n + 1)
     B.volume = A.volume
     # The circuit tables are nearly identical,
     # A just has for each configuration n+1 rows too much.
@@ -1761,7 +1766,7 @@ function mixed_cells(support::Vector{<:Matrix}, lifting::Vector{<:Vector})
 end
 
 @inline function shift_indices!(ind::Vector{<:NTuple{2,<:Integer}}, m)
-    for i = 1:n
+    for i = 1:length(ind)
         shift_indices!(ind, m, i)
     end
 end
