@@ -105,13 +105,25 @@ using Test
         @test length(cells_w) == 2
         @test sum(volume, cells_w) == 4
         @test sort(volume.(cells_w)) == [1, 3]
-        @test length(collect(MixedCellIterator(A, w))) == 2
         @test sum(c -> volume(c), MixedCellIterator(A, w; algorithm = :total_degree)) == 4
         @test all(cells_w) do c
             all(sort.(map(A_i -> A_i' * normal(c), A) .+ w)) do r
                 isapprox(r[1], r[2], atol = 1e-12)
             end
         end
+    end
+
+    @testset "MixedCellIterator" begin
+        A = support(equations(cyclic(5)))
+        lift = map(Ai -> rand(-Int32(2^15):Int32(2^15), size(Ai, 2)), A)
+        expected = sort(indices.(mixed_cells(A, lift)))
+        iter = MixedCellIterator(A, lift)
+        # each iteration returns its own cell
+        @test sort(indices.(collect(iter))) == expected
+        # a new iteration after stopping early starts from scratch
+        first(iter)
+        @test sort(indices.(collect(iter))) == expected
+        @test sum(volume, MixedCellIterator(A, lift; algorithm = :total_degree)) == 70
     end
 
     @testset "Fine mixed cells" begin

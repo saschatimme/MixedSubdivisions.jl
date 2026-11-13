@@ -1939,14 +1939,15 @@ is_fine(cell::MixedCell) = cell.is_fine
 Returns an iterator over all (fine) mixed cells of the given `support` induced
 by the given `lifting`. If the lifting is not sufficiently generic the mixed cells
 induced by a sligtly perturbated lifting are computed.
-The iterator returns in each iteration a [`MixedCell`](@ref). Note that due to efficiency
-reason the same object is returned in each iteration, i.e., if you want to store the computed
-cells you need to make a `copy`. Alternatively you can also use [`mixed_cells`](@ref)
-to compute all mixed cells.
+The iterator returns in each iteration a new [`MixedCell`](@ref).
+Alternatively you can also use [`mixed_cells`](@ref) to compute all mixed cells.
 """
-struct MixedCellIterator{T<:AbstractTraverser}
+mutable struct MixedCellIterator{T<:AbstractTraverser}
     start_traverser::T
     target_traverser::MixedCellTableTraverser{LexicographicOrdering}
+    # a previous iteration stopped early, the traversers need to be rebuilt
+    in_progress::Bool
+    traverser_kwargs::NamedTuple
     support::Vector{Matrix{Int32}}
     lifting::Vector{Vector{Int32}}
     # cache to not allocate during return
@@ -1972,6 +1973,28 @@ function MixedCellIterator(
     lifting::Vector{Vector{Int32}};
     kwargs...,
 )
+    start_traverser, target_traverser = iterator_traversers(support, lifting; kwargs...)
+    # initial dummy cell
+    cell = MixedCell(length(support))
+    # cache
+    n = length(support)
+    D = zeros(n, n)
+    b = zeros(n)
+
+    MixedCellIterator(
+        start_traverser,
+        target_traverser,
+        false,
+        values(kwargs),
+        support,
+        lifting,
+        cell,
+        D,
+        b,
+    )
+end
+
+function iterator_traversers(support, lifting; kwargs...)
     # We need to chain two traversers
     # 1) We compute a mixed subdivision w.r.t to the lexicographic ordering
     # 2) Each cell we then track to the mixed cells wrt to the given lifting
@@ -1989,14 +2012,7 @@ function MixedCellIterator(
     # set traverser to -target lifting since we compute internally in the MAX setting
     # but expect input in MIN setting
     target_traverser = MixedCellTableTraverser(target_cell, A, -target_lifting)
-    # initial dummy cell
-    cell = MixedCell(length(support))
-    # cache
-    n = length(support)
-    D = zeros(n, n)
-    b = zeros(n)
-
-    MixedCellIterator(start_traverser, target_traverser, support, lifting, cell, D, b)
+    start_traverser, target_traverser
 end
 
 function Base.show(io::IO, iter::MixedCellIterator)
@@ -2008,7 +2024,15 @@ Base.IteratorSize(::Type{<:MixedCellIterator}) = Base.SizeUnknown()
 Base.IteratorEltype(::Type{<:MixedCellIterator}) = Base.HasEltype()
 Base.eltype(::Type{<:MixedCellIterator}) = MixedCell
 
-@inline function Base.iterate(iter::MixedCellIterator, using_start_traverser = true)
+function Base.iterate(iter::MixedCellIterator)
+    if iter.in_progress
+        iter.start_traverser, iter.target_traverser =
+            iterator_traversers(iter.support, iter.lifting; iter.traverser_kwargs...)
+    end
+    iter.in_progress = true
+    iterate(iter, true)
+end
+@inline function Base.iterate(iter::MixedCellIterator, using_start_traverser::Bool)
     if using_start_traverser
         complete = next_cell!(iter.start_traverser)
     else
@@ -2026,7 +2050,7 @@ Base.eltype(::Type{<:MixedCellIterator}) = MixedCell
 
         if !using_start_traverser
             fill_cell!(iter, mixed_cell(iter.target_traverser))
-            return iter.cell, false
+            return copy(iter.cell), false
         end
 
         # Move to the target traverser
@@ -2034,6 +2058,7 @@ Base.eltype(::Type{<:MixedCellIterator}) = MixedCell
         using_start_traverser = false
         complete = next_cell!(iter.target_traverser)
     end
+    iter.in_progress = false
     nothing
 end
 
@@ -2173,7 +2198,7 @@ threads. Then the order of the cells can differ between runs.
 function mixed_cells(support::Vector{<:Matrix}, lifting::Vector{<:Vector}; threads::Bool = false)
     try
         threads && return parallel_mixed_cells(support, lifting)
-        return [copy(c) for c in MixedCellIterator(support, lifting)]
+        return collect(MixedCellIterator(support, lifting))
     catch e
         if e isa InexactError || e isa OverflowError
             throw(OverflowError("Mixed cells cannot be computed for this lift since an integer overflow occured."))
@@ -2255,7 +2280,7 @@ function fine_mixed_cells(
                     end
                     ncells += 1
                     mv += cell.volume
-                    push!(cells, copy(cell))
+                    push!(cells, cell)
                     if p !== nothing
                         ProgressMeter.update!(p, ncells; showvalues = ((:mixed_volume, mv),))
                     end
