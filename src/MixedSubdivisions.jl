@@ -1818,7 +1818,7 @@ function parallel_traverse(emit, init, finish, ntasks::Integer; delay = 5e-4)
     results = []
     try
         T, state = init()
-        while !next_cell!(T, 1, work)
+        while !work.failed[] && !next_cell!(T, 1, work)
             emit(state, T)
         end
         Threads.atomic_sub!(work.active, 1)
@@ -1861,7 +1861,7 @@ function work_loop!(emit, init, finish, work::SharedWork, traverser_state)
             T, state = traverser_state
             cell, stage = item
             start_subtree!(T, cell, stage)
-            while !next_cell!(T, stage + 1, work)
+            while !work.failed[] && !next_cell!(T, stage + 1, work)
                 emit(state, T)
             end
             Threads.atomic_sub!(work.active, 1)
@@ -2355,8 +2355,8 @@ function fine_mixed_cells(
 end
 
 """
-    fine_refinement(f::Vector{<:MP.AbstractPolynomialLike}, w, lifting_sampler = uniform_lifting_sampler; max_tries = 10)
-    fine_refinement(support::Vector{<:Matrix}, w::Vector{<:Vector}, lifting_sampler = uniform_lifting_sampler; max_tries = 10)
+    fine_refinement(f::Vector{<:MP.AbstractPolynomialLike}, w, lifting_sampler = uniform_lifting_sampler; max_tries = 10, threads = false)
+    fine_refinement(support::Vector{<:Matrix}, w::Vector{<:Vector}, lifting_sampler = uniform_lifting_sampler; max_tries = 10, threads = false)
 
 Compute a fine mixed subdivision refining the one induced by the lifting `w`, together with
 a lifting inducing it. The lifting is `M * w + r` for a random `r`, drawn as in
@@ -2366,6 +2366,9 @@ refinement; only where `w` has ties the cells are refined.
 
 Returns the `Vector` of mixed cells and the lifting, or `nothing` if `max_tries` many samples
 of `r` had ties themselves. Throws an `OverflowError` if the lifting exceeds `Int32`.
+
+With `threads = true` the cells are computed in parallel on `Threads.nthreads()` threads.
+Then the order of the cells can differ between runs.
 """
 function fine_refinement(f::Vector{<:MP.AbstractPolynomialLike}, w, args...; kwargs...)
     fine_refinement(support(f), w, args...; kwargs...)
@@ -2375,13 +2378,14 @@ function fine_refinement(
     w::Vector{<:Vector},
     lifting_sampler = uniform_lifting_sampler;
     max_tries = 10,
+    threads::Bool = false,
 )
     S = convert(Vector{Matrix{Int32}}, support)
     try
         W = convert(Vector{Vector{Int32}}, w)
         for attempt = 1:max_tries
             r = map(A -> Vector{Int64}(lifting_sampler(size(A, 2), attempt)), S)
-            res = refine_traverse(S, W, r)
+            res = refine_traverse(S, W, r; threads = threads)
             res === nothing && continue
             cells, M = res
             # computed in Int128, the conversion throws if the lifting exceeds Int32
@@ -2404,32 +2408,65 @@ function fine_refinement(
     end
 end
 
+# r has a tie on a face of w
+struct RefinementTie <: Exception end
+
+mutable struct RefinementState
+    cells::Vector{Tuple{Vector{NTuple{2,Int}},Int}}
+    # smallest M such that M * w + r induces the cells
+    M::Int128
+end
+RefinementState() = RefinementState(Tuple{Vector{NTuple{2,Int}},Int}[], one(Int128))
+
+# Collects the cells of `target` reachable from the current cell of `start`.
+function collect_refined!(state::RefinementState, target, start, τ_r)
+    carry_over!(target, start)
+    while !next_cell!(target)
+        t = mixed_cell(target)
+        for I in t.indexing
+            is_valid_inquality(t, I) || continue
+            dot_w = Int128(t.dot[I.cayley_index]) # ≥ 0
+            dot_r = inequality_dot(t, I, τ_r)
+            if iszero(dot_w)
+                # dot_r > 0 since the cell is a cell of the refinement
+                iszero(dot_r) && throw(RefinementTie())
+            elseif dot_r < 0
+                state.M = max(state.M, fld(-dot_r, dot_w) + 1)
+            end
+        end
+        push!(state.cells, (copy(t.indices), Int(t.volume)))
+    end
+    state
+end
+
 # Traverses the cells of `w` refined by `r`. Returns the indices and volumes of the cells
 # and the smallest M such that M * w + r induces them, or nothing if r has a tie.
-function refine_traverse(S, w, r)
+function refine_traverse(S, w, r; threads::Bool = false)
     τ_r = -reduce(vcat, r)
-    start, target = iterator_traversers(S, w, RefinedTarget(τ_r))
-    cells = Tuple{Vector{NTuple{2,Int}},Int}[]
-    M = one(Int128)
-    while !next_cell!(start)
-        carry_over!(target, start)
-        while !next_cell!(target)
-            t = mixed_cell(target)
-            for I in t.indexing
-                is_valid_inquality(t, I) || continue
-                dot_w = Int128(t.dot[I.cayley_index]) # ≥ 0
-                dot_r = inequality_dot(t, I, τ_r)
-                if iszero(dot_w)
-                    # dot_r > 0 since the cell is a cell of the refinement
-                    iszero(dot_r) && return nothing
-                elseif dot_r < 0
-                    M = max(M, fld(-dot_r, dot_w) + 1)
-                end
+    ord = RefinedTarget(τ_r)
+    try
+        if threads
+            init = () -> begin
+                # local: otherwise this assigns the variables of the else branch,
+                # shared by all tasks
+                local start, target = iterator_traversers(S, w, ord)
+                start, (target, RefinementState())
             end
-            push!(cells, (copy(t.indices), Int(t.volume)))
+            states = parallel_traverse(init, last, Threads.nthreads()) do (target, state), T
+                collect_refined!(state, target, T, τ_r)
+            end
+            reduce(vcat, [s.cells for s in states]), maximum(s -> s.M, states)
+        else
+            start, target = iterator_traversers(S, w, ord)
+            state = RefinementState()
+            while !next_cell!(start)
+                collect_refined!(state, target, start, τ_r)
+            end
+            state.cells, state.M
         end
+    catch e
+        e isa RefinementTie ? nothing : rethrow()
     end
-    cells, M
 end
 
 uniform_lifting_sampler(nterms, attempt = 1) = rand(Int32(-2^(10+attempt)):Int32(2^(10+attempt)), nterms)

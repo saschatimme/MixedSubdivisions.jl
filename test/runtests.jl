@@ -148,8 +148,8 @@ using Test
             map(Ai -> rand(-1:1, size(Ai, 2)), A), # ties
             map(Ai -> zeros(Int, size(Ai, 2)), A),
             map(Ai -> rand(-2^15:2^15, size(Ai, 2)), A), # generic
-        )
-            cells, lifting = fine_refinement(A, w)
+        ), threads in (false, true)
+            cells, lifting = fine_refinement(A, w; threads = threads)
             @test sum(volume, cells) == 924
             @test all(is_fine, cells)
             # the lifting induces exactly these cells
@@ -162,6 +162,17 @@ using Test
         end
         w = map(Ai -> rand(-1:1, size(Ai, 2)), A)
         @test sum(volume, first(fine_refinement(f, w))) == 924
+
+        # r = 0 has a tie wherever w has one, the next sample is used
+        w = map(Ai -> zeros(Int, size(Ai, 2)), A)
+        tied_first(n, attempt) =
+            attempt == 1 ? zeros(Int32, n) : MS.uniform_lifting_sampler(n, attempt)
+        for threads in (false, true)
+            cells, lifting = fine_refinement(A, w, tied_first; threads = threads)
+            @test sum(volume, cells) == 924
+            @test sort(key.(mixed_cells(A, lifting))) == sort(key.(cells))
+            @test fine_refinement(A, w, tied_first; max_tries = 1, threads = threads) === nothing
+        end
     end
 
     @testset "Fine mixed cells" begin
