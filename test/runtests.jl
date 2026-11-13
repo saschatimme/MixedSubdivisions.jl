@@ -126,6 +126,20 @@ using Test
         @test sum(volume, MixedCellIterator(A, lift; algorithm = :total_degree)) == 70
     end
 
+    @testset "is_fine and extreme liftings" begin
+        # A lifted point lies 1 above the face of a cell: all cells are fine,
+        # but a floating point check reported one as not fine
+        A = [[6 0 4 8; 7 0 3 8], [3 10 5 1; 5 6 5 4]]
+        lift = [[862884, 393514, -929749, 1038738], [355334, -832450, -991389, -804171]]
+        cells = mixed_cells(A, lift)
+        @test sum(volume, cells) == 56
+        @test all(is_fine, cells)
+
+        # a lifting value whose negation overflows Int32
+        A = [[0 0 1 1; 0 2 0 1], [0 0 1 2; 0 1 1 0]]
+        @test_throws OverflowError mixed_cells(A, [[0, 0, 0, typemin(Int32)], [0, 3, 4, 8]])
+    end
+
     @testset "Fine mixed cells" begin
         f = equations(cyclic(7))
         cells, lift = fine_mixed_cells(f)

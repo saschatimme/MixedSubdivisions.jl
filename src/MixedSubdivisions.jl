@@ -2011,7 +2011,8 @@ function iterator_traversers(support, lifting; kwargs...)
     end
     # set traverser to -target lifting since we compute internally in the MAX setting
     # but expect input in MIN setting
-    target_traverser = MixedCellTableTraverser(target_cell, A, -target_lifting)
+    # negate in Int64, -typemin(Int32) does not fit Int32
+    target_traverser = MixedCellTableTraverser(target_cell, A, -Int64.(target_lifting))
     start_traverser, target_traverser
 end
 
@@ -2124,6 +2125,8 @@ function carry_over!(B::MixedCellTable, A::MixedCellTable, ::RegenerationTravers
     B
 end
 
+# `mixed_cell_table` is a cell just emitted by the target traverser,
+# so its dot products with the (negated) lifting are up to date.
 function fill_cell!(iter::MixedCellIterator, mixed_cell_table::MixedCellTable)
     cell = iter.cell
     n = length(mixed_cell_table.indices)
@@ -2144,7 +2147,7 @@ function fill_cell!(iter::MixedCellIterator, mixed_cell_table::MixedCellTable)
         end
         iter.cell.β[i] = βᵢ
     end
-    cell.is_fine = is_fine(cell, iter.support, iter.lifting)
+    cell.is_fine = is_fine(mixed_cell_table)
 
     iter.cell
 end
@@ -2163,25 +2166,15 @@ function compute_normal!(cell::MixedCell, iter::MixedCellIterator)
     cell.normal .= iter.b
 end
 
-function is_fine(cell::MixedCell, support, lifting)
-    n = length(support)
-    for i = 1:n
-        Aᵢ = support[i]
-        wᵢ = lifting[i]
-
-        for j = 1:length(wᵢ)
-            βⱼ = Float64(wᵢ[j])
-            for k = 1:n
-                βⱼ += Aᵢ[k, j] * cell.normal[k]
-            end
-            Δ = abs(cell.β[i] - βⱼ)
-            if (Δ < 1e-12 || isapprox(cell.β[i], βⱼ; rtol = 1e-7)) &&
-               !(j == cell.indices[i][1] || j == cell.indices[i][2])
-                return false
-            end
-        end
+# The dot product of the inequality of a column with the lifting is zero exactly if
+# the lifted point lies on the face of the cell. The cell is fine if only the 2n columns
+# of the cell itself lie on it. The dot products are computed exactly in integers.
+function is_fine(cell::MixedCellTable)
+    nzeros = 0
+    @inbounds for d in cell.dot
+        nzeros += iszero(d)
     end
-    true
+    nzeros == 2 * length(cell.indices)
 end
 
 """
