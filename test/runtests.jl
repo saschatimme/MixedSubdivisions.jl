@@ -140,6 +140,30 @@ using Test
         @test_throws OverflowError mixed_cells(A, [[0, 0, 0, typemin(Int32)], [0, 3, 4, 8]])
     end
 
+    @testset "Fine refinement" begin
+        f = equations(cyclic(7))
+        A = support(f)
+        key(c) = (map(p -> minmax(p...), indices(c)), volume(c))
+        for w in (
+            map(Ai -> rand(-1:1, size(Ai, 2)), A), # ties
+            map(Ai -> zeros(Int, size(Ai, 2)), A),
+            map(Ai -> rand(-2^15:2^15, size(Ai, 2)), A), # generic
+        )
+            cells, lifting = fine_refinement(A, w)
+            @test sum(volume, cells) == 924
+            @test all(is_fine, cells)
+            # the lifting induces exactly these cells
+            @test sort(key.(mixed_cells(A, lifting))) == sort(key.(cells))
+            # cells which are already fine for w stay
+            @test Set(key.(filter(is_fine, mixed_cells(A, w)))) ⊆ Set(key.(cells))
+            @test all(c -> all(sort.(map(A_i -> A_i' * normal(c), A) .+ lifting)) do s
+                isapprox(s[1], s[2], rtol = 1e-10)
+            end, cells)
+        end
+        w = map(Ai -> rand(-1:1, size(Ai, 2)), A)
+        @test sum(volume, first(fine_refinement(f, w))) == 924
+    end
+
     @testset "Fine mixed cells" begin
         f = equations(cyclic(7))
         cells, lift = fine_mixed_cells(f)

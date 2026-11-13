@@ -5,6 +5,7 @@ export mixed_volume,
        MixedCell,
        mixed_cells,
        fine_mixed_cells,
+       fine_refinement,
        is_fine,
        volume,
        normal,
@@ -114,6 +115,19 @@ struct DotOrdering{T<:Number,Ord<:TermOrdering} <: TermOrdering
     tiebraker::Ord
 end
 DotOrdering(w::Vector; tiebraker = LexicographicOrdering()) = DotOrdering(w, tiebraker)
+
+"""
+    RefinedTarget(r, tiebreaker=LexicographicOrdering())
+
+Used in place of a term ordering, it refines the target `τ` of a traversal by `r`:
+the traversal follows the path to `M * τ + r` for `M → ∞` symbolically.
+The resulting cells are the cells of `τ` where ties are broken by `r` and then by `tiebreaker`.
+"""
+struct RefinedTarget{Ord<:TermOrdering} <: TermOrdering
+    r::Vector{Int64}
+    tiebreaker::Ord
+end
+RefinedTarget(r::Vector) = RefinedTarget(Vector{Int64}(r), LexicographicOrdering())
 
 
 #######################
@@ -631,6 +645,45 @@ function first_violated_inequality(
     empty && return nothing
 
     return best_index
+end
+
+# An inequality c is violated if ⟨c,τ⟩ < 0, or ⟨c,τ⟩ = 0 and ⟨c,r⟩ < 0.
+function first_violated_inequality(
+    cell::MixedCellTable{T,D},
+    τ::Vector,
+    ord::RefinedTarget,
+    τ_bound::Int32,
+) where {T,D}
+    compute_inequality_dots!(cell, τ, τ_bound)
+    found = false
+    best = first(cell.indexing)
+    best_τ, best_r = zero(D), zero(Int128)
+    @inbounds for I in cell.indexing
+        dot_τ = cell.dot[I.cayley_index]
+        dot_τ > 0 && continue
+        if iszero(dot_τ)
+            # only here r decides, so only here its dot product is needed
+            is_valid_inquality(cell, I) || continue
+            dot_r = inequality_dot(cell, I, ord.r)
+            dot_r < 0 || continue
+        else
+            dot_r = zero(Int128)
+        end
+        # The inequality is scaled by λ = M * dot_τ + dot_r. Unless both τ parts are zero
+        # they decide since two different scaled circuits are never equal.
+        better = if !found
+            true
+        elseif !iszero(dot_τ) || !iszero(best_τ)
+            circuit_less(cell, best, dot_τ, I, best_τ, ord.tiebreaker)
+        else
+            circuit_less(cell, best, dot_r, I, best_r, ord.tiebreaker)
+        end
+        if better
+            found = true
+            best, best_τ, best_r = I, dot_τ, dot_r
+        end
+    end
+    found ? best : nothing
 end
 
 """
@@ -1994,7 +2047,7 @@ function MixedCellIterator(
     )
 end
 
-function iterator_traversers(support, lifting; kwargs...)
+function iterator_traversers(support, lifting, ord = LexicographicOrdering(); kwargs...)
     # We need to chain two traversers
     # 1) We compute a mixed subdivision w.r.t to the lexicographic ordering
     # 2) Each cell we then track to the mixed cells wrt to the given lifting
@@ -2012,7 +2065,7 @@ function iterator_traversers(support, lifting; kwargs...)
     # set traverser to -target lifting since we compute internally in the MAX setting
     # but expect input in MIN setting
     # negate in Int64, -typemin(Int32) does not fit Int32
-    target_traverser = MixedCellTableTraverser(target_cell, A, -Int64.(target_lifting))
+    target_traverser = MixedCellTableTraverser(target_cell, A, -Int64.(target_lifting), ord)
     start_traverser, target_traverser
 end
 
@@ -2128,27 +2181,31 @@ end
 # `mixed_cell_table` is a cell just emitted by the target traverser,
 # so its dot products with the (negated) lifting are up to date.
 function fill_cell!(iter::MixedCellIterator, mixed_cell_table::MixedCellTable)
+    fill_cell!(iter, mixed_cell_table.indices, mixed_cell_table.volume)
+    iter.cell.is_fine = is_fine(mixed_cell_table)
+    iter.cell
+end
+# Fills everything except is_fine.
+function fill_cell!(iter::MixedCellIterator, indices, volume)
     cell = iter.cell
-    n = length(mixed_cell_table.indices)
+    n = length(indices)
     for i = 1:n
-        (aᵢ, bᵢ) = mixed_cell_table.indices[i]
+        (aᵢ, bᵢ) = indices[i]
         iter.cell.indices[i] = (Int(aᵢ), Int(bᵢ))
     end
-    cell.volume = mixed_cell_table.volume
+    cell.volume = volume
     compute_normal!(cell, iter)
 
     # compute smallest dot product of the normal and the lifted support
     γ = cell.normal
     for (i, Aᵢ) in enumerate(iter.support)
-        aᵢ = first(mixed_cell_table.indices[i])
+        aᵢ = first(indices[i])
         βᵢ = Float64(iter.lifting[i][aᵢ])
         for j = 1:n
             βᵢ += γ[j] * Aᵢ[j, aᵢ]
         end
         iter.cell.β[i] = βᵢ
     end
-    cell.is_fine = is_fine(mixed_cell_table)
-
     iter.cell
 end
 
@@ -2295,6 +2352,84 @@ function fine_mixed_cells(
             rethrow(e)
         end
     end
+end
+
+"""
+    fine_refinement(f::Vector{<:MP.AbstractPolynomialLike}, w, lifting_sampler = uniform_lifting_sampler; max_tries = 10)
+    fine_refinement(support::Vector{<:Matrix}, w::Vector{<:Vector}, lifting_sampler = uniform_lifting_sampler; max_tries = 10)
+
+Compute a fine mixed subdivision refining the one induced by the lifting `w`, together with
+a lifting inducing it. The lifting is `M * w + r` for a random `r`, drawn as in
+[`fine_mixed_cells`](@ref), and the smallest integer `M` for which this lifting induces
+exactly the computed cells. Every cell of `w` which is already fine is also a cell of the
+refinement; only where `w` has ties the cells are refined.
+
+Returns the `Vector` of mixed cells and the lifting, or `nothing` if `max_tries` many samples
+of `r` had ties themselves. Throws an `OverflowError` if the lifting exceeds `Int32`.
+"""
+function fine_refinement(f::Vector{<:MP.AbstractPolynomialLike}, w, args...; kwargs...)
+    fine_refinement(support(f), w, args...; kwargs...)
+end
+function fine_refinement(
+    support::Vector{<:Matrix},
+    w::Vector{<:Vector},
+    lifting_sampler = uniform_lifting_sampler;
+    max_tries = 10,
+)
+    S = convert(Vector{Matrix{Int32}}, support)
+    try
+        W = convert(Vector{Vector{Int32}}, w)
+        for attempt = 1:max_tries
+            r = map(A -> Vector{Int64}(lifting_sampler(size(A, 2), attempt)), S)
+            res = refine_traverse(S, W, r)
+            res === nothing && continue
+            cells, M = res
+            # computed in Int128, the conversion throws if the lifting exceeds Int32
+            lifting = map((wᵢ, rᵢ) -> Int32.(M .* wᵢ .+ rᵢ), W, r)
+            iter = MixedCellIterator(S, lifting)
+            return map(cells) do (indices, volume)
+                cell = copy(fill_cell!(iter, indices, volume))
+                # M makes all inequalities strict
+                cell.is_fine = true
+                cell
+            end, lifting
+        end
+        return nothing
+    catch e
+        if e isa InexactError || e isa OverflowError
+            throw(OverflowError("The fine refinement cannot be computed since an integer overflow occured."))
+        else
+            rethrow(e)
+        end
+    end
+end
+
+# Traverses the cells of `w` refined by `r`. Returns the indices and volumes of the cells
+# and the smallest M such that M * w + r induces them, or nothing if r has a tie.
+function refine_traverse(S, w, r)
+    τ_r = -reduce(vcat, r)
+    start, target = iterator_traversers(S, w, RefinedTarget(τ_r))
+    cells = Tuple{Vector{NTuple{2,Int}},Int}[]
+    M = one(Int128)
+    while !next_cell!(start)
+        carry_over!(target, start)
+        while !next_cell!(target)
+            t = mixed_cell(target)
+            for I in t.indexing
+                is_valid_inquality(t, I) || continue
+                dot_w = Int128(t.dot[I.cayley_index]) # ≥ 0
+                dot_r = inequality_dot(t, I, τ_r)
+                if iszero(dot_w)
+                    # dot_r > 0 since the cell is a cell of the refinement
+                    iszero(dot_r) && return nothing
+                elseif dot_r < 0
+                    M = max(M, fld(-dot_r, dot_w) + 1)
+                end
+            end
+            push!(cells, (copy(t.indices), Int(t.volume)))
+        end
+    end
+    cells, M
 end
 
 uniform_lifting_sampler(nterms, attempt = 1) = rand(Int32(-2^(10+attempt)):Int32(2^(10+attempt)), nterms)
