@@ -1344,6 +1344,46 @@ mutable struct RegenerationTraverser <: AbstractTraverser
     stage::Int
 end
 
+"""
+    SharedWork
+
+Valid cells of some stage whose subtrees still need to be traversed,
+shared between the tasks of [`parallel_traverse`](@ref).
+"""
+struct SharedWork
+    cells::Vector{Tuple{MixedCellTable,Int}}
+    lock::Threads.SpinLock
+    queued::Threads.Atomic{Int} # = length(cells)
+    idle::Threads.Atomic{Int} # tasks waiting for work
+    active::Threads.Atomic{Int} # queued cells and cells in progress
+    failed::Threads.Atomic{Bool} # a task threw an exception
+end
+SharedWork() = SharedWork(
+    Tuple{MixedCellTable,Int}[],
+    Threads.SpinLock(),
+    Threads.Atomic{Int}(0),
+    Threads.Atomic{Int}(0),
+    Threads.Atomic{Int}(0),
+    Threads.Atomic{Bool}(false),
+)
+
+function share!(work::SharedWork, cell::MixedCellTable, stage::Int)
+    Threads.atomic_add!(work.active, 1)
+    lock(work.lock) do
+        push!(work.cells, (cell, stage))
+        Threads.atomic_add!(work.queued, 1)
+    end
+    nothing
+end
+
+function take_work!(work::SharedWork)
+    lock(work.lock) do
+        isempty(work.cells) && return nothing
+        Threads.atomic_sub!(work.queued, 1)
+        pop!(work.cells)
+    end
+end
+
 function RegenerationTraverser(As)
     n = size(As[1], 1)
     L = [zeros(eltype(As[1]), n) LinearAlgebra.I]
@@ -1390,8 +1430,15 @@ function RegenerationTraverser(As)
     RegenerationTraverser(traversers, 1)
 end
 
-function next_cell!(T::RegenerationTraverser)
-    @inbounds while T.stage > 0
+# Emits the cells of the last stage reachable from the current cell of stage
+# `first_stage - 1` (or from scratch for `first_stage = 1`).
+# With `work`, subtrees are handed over to idle tasks, see `parallel_traverse`.
+function next_cell!(
+    T::RegenerationTraverser,
+    first_stage::Int = 1,
+    work::Union{Nothing,SharedWork} = nothing,
+)
+    @inbounds while T.stage ≥ first_stage
         complete = next_cell!(T.traversers[T.stage])
         if complete
             T.stage -= 1
@@ -1408,6 +1455,12 @@ function next_cell!(T::RegenerationTraverser)
             return false
         end
 
+        # Another task waits for work, hand over this subtree
+        if work !== nothing && work.idle[] > work.queued[]
+            share!(work, copy(cell), T.stage)
+            continue
+        end
+
         # Move to the next stage
         regeneration_stage_carry_over!(
             T.traversers[T.stage+1],
@@ -1418,8 +1471,20 @@ function next_cell!(T::RegenerationTraverser)
     end
 
     # reset stage
-    T.stage = 1
+    T.stage = first_stage
     true
+end
+
+"""
+    start_subtree!(T::RegenerationTraverser, A::MixedCellTable, stage)
+
+Prepare `T` to traverse the cells of the later stages reachable from the cell `A` of `stage`.
+Afterwards call `next_cell!(T, stage + 1)`.
+"""
+function start_subtree!(T::RegenerationTraverser, A::MixedCellTable, stage::Integer)
+    regeneration_stage_carry_over!(T.traversers[stage+1], A, stage)
+    T.stage = stage + 1
+    T
 end
 
 function regeneration_stage_carry_over!(
@@ -1427,7 +1492,13 @@ function regeneration_stage_carry_over!(
     T_A::MixedCellTableTraverser,
     stage::Integer,
 )
-    A = mixed_cell(T_A)
+    regeneration_stage_carry_over!(T_B, mixed_cell(T_A), stage)
+end
+function regeneration_stage_carry_over!(
+    T_B::MixedCellTableTraverser,
+    A::MixedCellTable,
+    stage::Integer,
+)
     τ_bound = T_B.target_bound
     if T_B.allow32 && regeneration_stage_carry_over!(cell32!(T_B), A, T_B.cayley, stage, τ_bound)
         T_B.use64 = false
@@ -1626,17 +1697,22 @@ function support(
 end
 
 """
-    mixed_volume(F::Vector{<:MP.AbstractPolynomialLike}; show_progress=true, algorithm=:regeneration)
-    mixed_volume(𝑨::Vector{<:Matrix}; show_progress=true, algorithm=:regeneration)
+    mixed_volume(F::Vector{<:MP.AbstractPolynomialLike}; show_progress=true, algorithm=:regeneration, threads=false)
+    mixed_volume(𝑨::Vector{<:Matrix}; show_progress=true, algorithm=:regeneration, threads=false)
 
 Compute the mixed volume of the given polynomial system `F` resp. represented
 by the support `𝑨`.
 There are two possible values for `algorithm`:
 * `:total_degree`: Use the total degree homotopy algorithm described in Section 7.1
 * `:regeneration`: Use the tropical regeneration algorithm described in Section 7.2
+
+With `threads = true` the mixed cells are computed in parallel on `Threads.nthreads()` threads.
+This is only supported for `algorithm = :regeneration` and shows no progress.
+It pays off for problems which take more than a few milliseconds.
 """
-function mixed_volume(args...; show_progress = true, kwargs...)
+function mixed_volume(args...; show_progress = true, threads::Bool = false, kwargs...)
     try
+        threads && return parallel_mixed_volume(args...; kwargs...)
         T = traverser(args...; kwargs...)
         mv = 0
         complete = next_cell!(T)
@@ -1657,6 +1733,134 @@ function mixed_volume(args...; show_progress = true, kwargs...)
             rethrow(e)
         end
     end
+end
+
+#################
+# Multithreading #
+#################
+
+"""
+    parallel_traverse(emit, init, finish, ntasks; delay = 5e-4)
+
+Traverses all mixed cells of a regeneration homotopy on up to `ntasks` tasks.
+`init()` returns a `RegenerationTraverser` `T` and a state, `emit(state, T)` is called for
+each cell of `T` and the results of `finish(state)` of all tasks are returned.
+
+The calling task starts alone. The other tasks join after `delay` seconds, since small
+problems do not benefit from them. A task hands over a subtree whenever another task is idle.
+"""
+function parallel_traverse(emit, init, finish, ntasks::Integer; delay = 5e-4)
+    work = SharedWork()
+    work.active[] = 1 # the whole tree
+    helpers = map(2:ntasks) do _
+        Threads.@spawn begin
+            deadline = time() + delay
+            while time() < deadline
+                work.active[] == 0 && return nothing
+                Libc.systemsleep(2e-5)
+            end
+            work_loop!(emit, init, finish, work, nothing)
+        end
+    end
+    results = []
+    try
+        T, state = init()
+        while !next_cell!(T, 1, work)
+            emit(state, T)
+        end
+        Threads.atomic_sub!(work.active, 1)
+        push!(results, work_loop!(emit, init, finish, work, (T, state)))
+    catch
+        work.failed[] = true
+        foreach(task -> try wait(task) catch end, helpers)
+        rethrow()
+    end
+    for task in helpers
+        result = try
+            fetch(task)
+        catch e
+            e isa TaskFailedException ? throw(e.task.exception) : rethrow()
+        end
+        result === nothing || push!(results, result)
+    end
+    results
+end
+
+# Traverses shared subtrees until all work is done. Returns nothing if it got no work.
+function work_loop!(emit, init, finish, work::SharedWork, traverser_state)
+    try
+        Threads.atomic_add!(work.idle, 1)
+        spins = 0
+        while !work.failed[]
+            item = take_work!(work)
+            if item === nothing
+                work.active[] == 0 && break
+                # don't keep idle cores busy
+                spins += 1
+                spins < 100 ? yield() : Libc.systemsleep(2e-5)
+                continue
+            end
+            spins = 0
+            Threads.atomic_sub!(work.idle, 1)
+            if traverser_state === nothing
+                traverser_state = init()
+            end
+            T, state = traverser_state
+            cell, stage = item
+            start_subtree!(T, cell, stage)
+            while !next_cell!(T, stage + 1, work)
+                emit(state, T)
+            end
+            Threads.atomic_sub!(work.active, 1)
+            Threads.atomic_add!(work.idle, 1)
+        end
+    catch
+        work.failed[] = true
+        rethrow()
+    end
+    traverser_state === nothing ? nothing : finish(last(traverser_state))
+end
+
+parallel_mixed_volume(A::Matrix...; kwargs...) = parallel_mixed_volume(collect(A); kwargs...)
+function parallel_mixed_volume(f::MP.AbstractPolynomialLike...; kwargs...)
+    parallel_mixed_volume(collect(f); kwargs...)
+end
+function parallel_mixed_volume(F::Vector{<:MP.AbstractPolynomialLike}; kwargs...)
+    parallel_mixed_volume(support(F); kwargs...)
+end
+function parallel_mixed_volume(
+    As::Vector{<:Matrix};
+    algorithm = :regeneration,
+    ntasks::Integer = Threads.nthreads(),
+)
+    algorithm == :regeneration ||
+        throw(ArgumentError("`threads = true` is only supported for `algorithm = :regeneration`."))
+    As = normalize_supports(As)
+    length(As) == size(As[1], 1) ||
+        throw(ArgumentError("Number of supports and number of variables doesn't match."))
+    volumes = parallel_traverse(() -> (RegenerationTraverser(As), Ref(0)), mv -> mv[], ntasks) do mv, T
+        mv[] += mixed_cell(T).volume
+    end
+    sum(volumes)
+end
+
+function parallel_mixed_cells(
+    support::Vector{<:Matrix},
+    lifting::Vector{<:Vector};
+    ntasks::Integer = Threads.nthreads(),
+)
+    function init()
+        iter = MixedCellIterator(support, lifting)
+        iter.start_traverser, (iter, MixedCell[])
+    end
+    cells = parallel_traverse(init, last, ntasks) do (iter, cells), T
+        target = iter.target_traverser
+        carry_over!(target, T)
+        while !next_cell!(target)
+            push!(cells, copy(fill_cell!(iter, mixed_cell(target))))
+        end
+    end
+    reduce(vcat, cells)
 end
 
 """
@@ -1956,15 +2160,19 @@ function is_fine(cell::MixedCell, support, lifting)
 end
 
 """
-    mixed_cells(support::Vector{<:Matrix}, lifting::Vector{<:Vector})
+    mixed_cells(support::Vector{<:Matrix}, lifting::Vector{<:Vector}; threads=false)
 
 Compute all (fine) mixed cells of the given `support` induced
 by the given `lifting`. If the lifting is not sufficiently generic the mixed cells
 induced by a sligtly perturbated lifting are computed.
 The mixed cells are stored as a [`MixedCell`](@ref).
+
+With `threads = true` the mixed cells are computed in parallel on `Threads.nthreads()`
+threads. Then the order of the cells can differ between runs.
 """
-function mixed_cells(support::Vector{<:Matrix}, lifting::Vector{<:Vector})
+function mixed_cells(support::Vector{<:Matrix}, lifting::Vector{<:Vector}; threads::Bool = false)
     try
+        threads && return parallel_mixed_cells(support, lifting)
         return [copy(c) for c in MixedCellIterator(support, lifting)]
     catch e
         if e isa InexactError || e isa OverflowError
@@ -1989,13 +2197,14 @@ end
 
 
 """
-    fine_mixed_cells(f::Vector{<:MP.AbstractPolynomialLike}; show_progress=true, max_tries = 10)
-    fine_mixed_cells(support::Vector{<:Matrix}; show_progress=true, max_tries = 10)
+    fine_mixed_cells(f::Vector{<:MP.AbstractPolynomialLike}; show_progress=true, max_tries = 10, threads = false)
+    fine_mixed_cells(support::Vector{<:Matrix}; show_progress=true, max_tries = 10, threads = false)
 
 Compute all (fine) mixed cells of the given `support` induced
 by a generic lifting. This guarantees that all induced initial forms are binomials.
 If the chosen lifting is not generic, then the algorithm is restarted. This happens at most
 `max_tries` times many.
+With `threads = true` the mixed cells are computed in parallel, see [`mixed_cells`](@ref).
 Returns a `Vector` of all mixed cells and the corresponding lifting or `nothing` if the algorithm
 wasn't able to compute fine mixed cells. This can happen due to some current technical limitations.
 """
@@ -2009,7 +2218,8 @@ function fine_mixed_cells(
     support::Vector{<:Matrix},
     lifting_sampler = uniform_lifting_sampler;
     show_progress = true,
-    max_tries = 10
+    max_tries = 10,
+    threads::Bool = false,
 )
     if show_progress
         p = ProgressMeter.ProgressUnknown(dt=0.25, desc="Computing mixed cells...")
@@ -2029,22 +2239,26 @@ function fine_mixed_cells(
                 # deprecated
                 lifting = map(A -> lifting_sampler(size(A, 2))::Vector{Int32}, support)
             end
-            iter = MixedCellIterator(support, lifting)
-
-            all_valid = true
-            cells = MixedCell[]
-            ncells = 0
-            mv = 0
-            for (k, cell) in enumerate(iter)
-                if !is_fine(cell)
-                    all_valid = false
-                    break
-                end
-                ncells += 1
-                mv += cell.volume
-                push!(cells, copy(cell))
-                if p !== nothing
-                    ProgressMeter.update!(p, ncells; showvalues = ((:mixed_volume, mv),))
+            if threads
+                cells = parallel_mixed_cells(support, lifting)
+                all_valid = all(is_fine, cells)
+                mv = sum(volume, cells; init = 0)
+            else
+                all_valid = true
+                cells = MixedCell[]
+                ncells = 0
+                mv = 0
+                for cell in MixedCellIterator(support, lifting)
+                    if !is_fine(cell)
+                        all_valid = false
+                        break
+                    end
+                    ncells += 1
+                    mv += cell.volume
+                    push!(cells, copy(cell))
+                    if p !== nothing
+                        ProgressMeter.update!(p, ncells; showvalues = ((:mixed_volume, mv),))
+                    end
                 end
             end
             if all_valid

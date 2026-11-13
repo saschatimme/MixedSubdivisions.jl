@@ -259,6 +259,7 @@ using Test
         ]
         @test mixed_volume(A, algorithm = :regeneration) == 404441984
         @test mixed_volume(A, algorithm = :total_degree) == 404441984
+        @test mixed_volume(A, threads = true) == 404441984
 
         # lifting too large for Int32 dot products
         A = [
@@ -272,6 +273,25 @@ using Test
             [-424101032, 158185279, -335004225, -238058356, -183751679],
         ]
         @test sum(volume, mixed_cells(A, lift)) == 62259741
+        @test sum(volume, mixed_cells(A, lift; threads = true)) == 62259741
+    end
+
+    @testset "Multithreading" begin
+        # CI runs the tests with several threads, see run_tests.yml
+        f = equations(cyclic(10))
+        @test mixed_volume(f; threads = true) == 35940
+        @test mixed_volume(support(f); threads = true) == 35940
+        @test_throws ArgumentError mixed_volume(f; threads = true, algorithm = :total_degree)
+
+        A = support(equations(cyclic(9)))
+        lift = map(Ai -> rand(-Int32(2^15):Int32(2^15), size(Ai, 2)), A)
+        key(c) = (c.indices, c.volume, c.normal)
+        cells = mixed_cells(A, lift; threads = true)
+        @test sort(key.(cells)) == sort(key.(mixed_cells(A, lift)))
+
+        cells, lift = fine_mixed_cells(f; threads = true, show_progress = false)
+        @test sum(volume, cells) == 35940
+        @test all(is_fine, cells)
     end
 
 
