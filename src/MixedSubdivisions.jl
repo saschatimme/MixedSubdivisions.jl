@@ -246,7 +246,18 @@ function Base.iterate(CI::CayleyIndexing, state)
 end
 
 
-mutable struct MixedCellTable
+"""
+    table_limit(T)
+
+Bound on the absolute value of the volume and the circuit table entries of a
+[`MixedCellTable`](@ref) with element type `T`. It leaves one bit of headroom so that
+sums of two entries, such as `volume - c`, cannot overflow `T`.
+"""
+table_limit(::Type{T}) where {T<:Signed} = typemax(T) >> 1
+
+# The circuit table is stored in T = Int32 or T = Int64.
+# Intermediate results and dot products are computed in D = widen(T).
+mutable struct MixedCellTable{T<:Signed,D<:Signed}
     # A mixed cell is defined by two vectors our of each configuration.
     # We assume that each point is in ℤⁿ and the i-th configuration has mᵢ points.
     # Therefore, the Cayley configuration has ∑ mᵢ =: m columns and 2n rows.
@@ -272,71 +283,69 @@ mutable struct MixedCellTable
     # has as value -volume(mixed cell) and the sum of all three needs to add to 0.
     # So if we store the volume, we only need to store on other entry.
     # So as a result it is suffcient to everything in a m × n matrix
-    circuit_table::Matrix{Int32}
-    volume::Int32
+    circuit_table::Matrix{T}
+    volume::T
 
     indexing::CayleyIndexing # we store these duplicates
 
     # overflow checks
-    table_col_bound::Vector{Int32}
+    table_col_bound::Vector{T}
+    max_col_bound::T # = maximum(table_col_bound)
 
     # caches
-    rotated_column::Vector{Int32}
-    rotated_in_ineq::Vector{Int32}
-    # dot products
+    rotated_column::Vector{T}
+    rotated_in_ineq::Vector{T}
+    # dot products, computed in T if dot_bound allows it and in D otherwise
     dot_bound::Int128
-    dot::Vector{Int64}
-    dot_32::Vector{Int32}
-    dot_128::Vector{Int128}
+    dot::Vector{D}
+    dot_low::Vector{T}
 end
 
-function MixedCellTable(
+function MixedCellTable(indices, cayley::Matrix, indexing::CayleyIndexing; kwargs...)
+    MixedCellTable{Int32}(indices, cayley, indexing; kwargs...)
+end
+function MixedCellTable{T}(
     indices,
     cayley::Matrix,
     indexing::CayleyIndexing;
     fill_circuit_table::Bool = true,
-)
-    circuit_table = zeros(Int32, ncolumns(indexing), nconfigurations(indexing))
+) where {T<:Signed}
+    m, n = ncolumns(indexing), nconfigurations(indexing)
+    circuit_table = zeros(T, m, n)
     if fill_circuit_table
         volume = fill_circuit_table!(circuit_table, indices, cayley, indexing)
     else
-        volume = zero(Int32)
+        volume = zero(T)
     end
     table_col_bound = vec(maximum(abs, circuit_table, dims = 1))
-    rotated_column = [zero(Int32) for _ in indexing]
-    rotated_in_ineq = zeros(Int32, size(circuit_table, 2))
-    dot_bound = zero(Int128)
-    dot = zeros(Int64, size(circuit_table, 1))
-    dot_32 = similar(dot, Int32)
-    dot_128 = similar(dot, Int128)
-    MixedCellTable(
-        convert(Vector{NTuple{2,Int}}, indices),
+    MixedCellTable{T,widen(T)}(
+        collect(NTuple{2,Int}, indices),
         circuit_table,
         volume,
         indexing,
         table_col_bound,
-        rotated_column,
-        rotated_in_ineq,
-        dot_bound,
-        dot,
-        dot_32,
-        dot_128,
+        maximum(table_col_bound),
+        zeros(T, m),
+        zeros(T, n),
+        zero(Int128),
+        zeros(widen(T), m),
+        zeros(T, m),
     )
 end
 
-function Base.copy(M::MixedCellTable)
-    MixedCellTable(
+function Base.copy(M::MixedCellTable{T,D}) where {T,D}
+    MixedCellTable{T,D}(
         copy(M.indices),
         copy(M.circuit_table),
-        copy(M.volume),
+        M.volume,
         copy(M.indexing),
         copy(M.table_col_bound),
+        M.max_col_bound,
         copy(M.rotated_column),
         copy(M.rotated_in_ineq),
         M.dot_bound,
         copy(M.dot),
-        copy(M.dot_32),
-        copy(M.dot_128),
+        copy(M.dot_low),
     )
 end
 
@@ -352,11 +361,20 @@ function fill_circuit_table!(
     indexing::CayleyIndexing,
 ) where {I}
     D = mixed_cell_submatrix(cayley, indexing, mixed_cell_indices)
-    n, m = nconfigurations(indexing), ncolumns(indexing)
+    volume = fill_circuit_table_float!(table, D, cayley, indexing)
+    # Float64 is not precise enough, compute the circuits exactly
+    volume === nothing ? fill_circuit_table_exact!(table, D, cayley, indexing) : volume
+end
+
+# Returns nothing if the circuits cannot be computed exactly with Float64.
+function fill_circuit_table_float!(table::Matrix{I}, D, cayley, indexing) where {I}
+    n = nconfigurations(indexing)
     lu = LinearAlgebra.lu(D)
-    volume = round(I, abs(LinearAlgebra.det(lu)))
+    v = abs(LinearAlgebra.det(lu))
+    v < maxintfloat() || return nothing
+    volume = round(I, v)
     x = zeros(2n)
-    y, b, b̂ = zeros(I, 2n), zeros(I, 2n), zeros(I, 2n)
+    y, b = zeros(I, 2n), zeros(I, 2n)
     # We need to compute the initial circuits from scratch
     for ind in indexing
         # compute a circuit
@@ -365,11 +383,16 @@ function fill_circuit_table!(
         end
         LinearAlgebra.ldiv!(x, lu, b)
         x .*= volume
+        all(xᵢ -> abs(xᵢ) < maxintfloat(), x) || return nothing
         y .= round.(I, x)
-        # verify that we have a correct circuit
-        LinearAlgebra.mul!(b̂, D, y)
-        b .*= volume
-        b == b̂ || error("Cannot construct initial circuit table.") # this should increase precision or similar
+        # verify that we have a correct circuit, i.e., D * y == volume * b
+        for i = 1:2n
+            Dy_i = zero(I)
+            for j = 1:2n
+                Dy_i += D[i, j] * y[j]
+            end
+            Dy_i == volume * b[i] || return nothing
+        end
 
         # we pick every second entry of x
         for (k, l) in enumerate(1:2:2n)
@@ -378,6 +401,21 @@ function fill_circuit_table!(
     end
 
     volume
+end
+
+function fill_circuit_table_exact!(table::Matrix{I}, D, cayley, indexing) where {I}
+    n = nconfigurations(indexing)
+    D_exact = Rational{BigInt}.(D)
+    volume = abs(LinearAlgebra.det(D_exact))
+    D⁻¹ = inv(D_exact)
+    for ind in indexing
+        y = volume .* (D⁻¹ * cayley[:, ind.cayley_index])
+        # we pick every second entry of y
+        for (k, l) in enumerate(1:2:2n)
+            table[ind.cayley_index, k] = I(y[l])
+        end
+    end
+    I(volume)
 end
 
 function mixed_cell_submatrix(C::Matrix, indexing::CayleyIndexing, mixed_cell_indices)
@@ -486,30 +524,26 @@ end
 
 Compute the dot product of all inequalities with `τ` and store in `result`.
 """
-function compute_inequality_dots!(cell::MixedCellTable, τ, τ_bound = typemax(Int32))
-    n, m = nconfigurations(cell.indexing), ncolumns(cell.indexing)
-
-    if cell.dot_bound < typemax(Int32)
-        _compute_dot!(cell.dot_32, cell, τ, Int32)
-        @inbounds for k = 1:m
-            cell.dot[k] = cell.dot_32[k]
+function compute_inequality_dots!(
+    cell::MixedCellTable{T,D},
+    τ,
+    τ_bound = typemax(Int32),
+) where {T,D}
+    # Traversers only use a table type for which the dot products fit D
+    cell.dot_bound < typemax(D) || throw_dot_overflow()
+    if cell.dot_bound < typemax(T)
+        _compute_dot!(cell.dot_low, cell, τ, T)
+        @inbounds for k in eachindex(cell.dot)
+            cell.dot[k] = cell.dot_low[k]
         end
-    elseif cell.dot_bound < typemax(Int64)
-        _compute_dot!(cell.dot, cell, τ, Int64)
     else
-        _compute_dot!(cell.dot_128, cell, τ, Int128)
-        # Assign final result. Throws an InexactError in case of an overflow
-        max_64 = Int128(typemax(Int64))
-        @inbounds for k = 1:m
-            # We can ignore the case that
-            #   cell.dot_128[k] > typemax(Int64)
-            # since a positive dot product is irrelevant anyway
-            cell.dot[k] = min(cell.dot_128[k], max_64)
-        end
+        _compute_dot!(cell.dot, cell, τ, D)
     end
-
     cell
 end
+
+@noinline throw_dot_overflow() =
+    throw(OverflowError("Dot products of the mixed cell cone inequalities overflow."))
 
 function _compute_dot!(result, cell, τ, ::Type{T}) where {T<:Integer}
     n, m = nconfigurations(cell.indexing), ncolumns(cell.indexing)
@@ -549,40 +583,20 @@ end
 
 """
     inequality_dot(cell::MixedCellTable, ineq::CayleyIndex, τ)
-Compute the dot product of the given inequality with `τ`.
+
+Compute the dot product of the given inequality with `τ` in `Int128`.
 """
 function inequality_dot(cell::MixedCellTable, ineq::CayleyIndex, τ)
-    if cell.dot_bound < typemax(Int32)
-        _inequality_dot(cell, ineq, τ, Int32)
-    elseif cell.dot_bound < typemax(Int64)
-        _inequality_dot(cell, ineq, τ, Int64)
-    else
-        _inequality_dot(cell, ineq, τ, Int128)
-    end
-end
-
-@inline function _inequality_dot(
-    cell::MixedCellTable,
-    ineq::CayleyIndex,
-    τ,
-    ::Type{T},
-) where {T<:Integer}
-    dot = -cell.volume * T(τ[ineq.cayley_index])
+    dot = -Int128(cell.volume) * τ[ineq.cayley_index]
     @inbounds for i = 1:length(cell.indices)
         aᵢ, bᵢ = cell.indices[i]
         τ_aᵢ, τ_bᵢ = τ[cell.indexing[i, aᵢ]], τ[cell.indexing[i, bᵢ]]
-        τᵢ = T(τ_aᵢ) - T(τ_bᵢ)
-
-        if !iszero(τᵢ)
-            dot += cell.circuit_table[ineq.cayley_index, i] * τᵢ
-        end
-
+        dot += cell.circuit_table[ineq.cayley_index, i] * (Int128(τ_aᵢ) - τ_bᵢ)
         if i == ineq.config_index
-            dot += cell.volume * T(τ_bᵢ)
+            dot += Int128(cell.volume) * τ_bᵢ
         end
     end
-
-    Int64(dot)
+    dot
 end
 
 """
@@ -592,14 +606,14 @@ Compute the first violated inequality in the given mixed cell with respect to th
 term ordering and the target weight vector `τ`.
 """
 function first_violated_inequality(
-    mixed_cell::MixedCellTable,
+    mixed_cell::MixedCellTable{T,D},
     τ::Vector,
     ord::TermOrdering,
     τ_bound::Int32,
-)
+) where {T,D}
     empty = true
     best_index = first(mixed_cell.indexing)
-    best_dot = zero(Int64)
+    best_dot = zero(D)
 
     compute_inequality_dots!(mixed_cell, τ, τ_bound)
     @inbounds for I in mixed_cell.indexing
@@ -620,6 +634,17 @@ function first_violated_inequality(
 end
 
 """
+    exact_mul(λ, c)
+
+Compute `λ * c` without overflow.
+"""
+@inline exact_mul(λ::Int64, c::Int32) = widemul(λ, Int64(c))
+@inline function exact_mul(λ::Integer, c::Integer)
+    p, overflow = Base.Checked.mul_with_overflow(Int128(λ), Int128(c))
+    overflow ? big(λ) * big(c) : p
+end
+
+"""
     circuit_less(cell::MixedCellTable, ind₁::CayleyIndex, λ₁, ind₂::CayleyIndex, λ₂, ord::DotOrdering)
 
 Decicdes whether `λ₁c[ind₁] ≺ λ₂c[ind₂]` where ≺ is the ordering given by `ord`.
@@ -627,31 +652,31 @@ Decicdes whether `λ₁c[ind₁] ≺ λ₂c[ind₂]` where ≺ is the ordering g
 @inline function circuit_less(
     cell::MixedCellTable,
     ind₁::CayleyIndex,
-    λ₁::Int64,
+    λ₁::Integer,
     ind₂::CayleyIndex,
-    λ₂::Int64,
+    λ₂::Integer,
     ord::DotOrdering,
 )
-    a = λ₁ * inequality_dot(cell, ind₁, ord.w)
-    b = λ₂ * inequality_dot(cell, ind₂, ord.w)
+    a = exact_mul(λ₁, inequality_dot(cell, ind₁, ord.w))
+    b = exact_mul(λ₂, inequality_dot(cell, ind₂, ord.w))
     a == b ? circuit_less(cell, ind₁, λ₁, ind₂, λ₂, ord.tiebraker) : a < b
 end
 
 @inline function circuit_less(
     cell::MixedCellTable,
     ind₁::CayleyIndex,
-    λ₁::Int64,
+    λ₁::Integer,
     ind₂::CayleyIndex,
-    λ₂::Int64,
+    λ₂::Integer,
     ord::LexicographicOrdering,
 )
     @inbounds for i = 1:length(cell.indices)
         aᵢ, bᵢ = cell.indices[i]
         # Optimize for the common case
         if i ≠ ind₁.config_index && i ≠ ind₂.config_index
-            c₁_aᵢ = Int64(cell.circuit_table[ind₁.cayley_index, i])
-            c₂_aᵢ = Int64(cell.circuit_table[ind₂.cayley_index, i])
-            λc₁, λc₂ = λ₁ ⊙ c₁_aᵢ, λ₂ ⊙ c₂_aᵢ
+            c₁_aᵢ = cell.circuit_table[ind₁.cayley_index, i]
+            c₂_aᵢ = cell.circuit_table[ind₂.cayley_index, i]
+            λc₁, λc₂ = exact_mul(λ₁, c₁_aᵢ), exact_mul(λ₂, c₂_aᵢ)
             if λc₁ ≠ λc₂
                 # we have c₁_aᵢ=-c₁_bᵢ and c₂_aᵢ =-c₂_bᵢ
                 if aᵢ < bᵢ
@@ -679,7 +704,7 @@ end
         for k = 1:n
             j = sorted[k]
             c₁, c₂ = inequality_coordinates(cell, ind₁, ind₂, i, j)
-            λc₁, λc₂ = λ₁ ⊙ Int64(c₁), λ₂ ⊙ Int64(c₂)
+            λc₁, λc₂ = exact_mul(λ₁, c₁), exact_mul(λ₂, c₂)
 
             if λc₁ < λc₂
                 return true
@@ -729,13 +754,16 @@ end
 
 Exchange either the first or second column (depending on `exchange`) in the
 configuration defined by `ineq` with the column defined in `ineq`.
+Returns `false` without changing the cell if the new entries would exceed
+[`table_limit`](@ref).
 """
 function exchange_column!(
-    cell::MixedCellTable,
+    cell::MixedCellTable{T},
     exchange::Exchange,
     ineq::CayleyIndex,
     τ_bound,
-)
+) where {T}
+    U = unsigned(widen(T))
     rotated_column, rotated_in_ineq = cell.rotated_column, cell.rotated_in_ineq
     table, table_col_bound = cell.circuit_table, cell.table_col_bound
     i = ineq.config_index
@@ -743,12 +771,17 @@ function exchange_column!(
 
     @inbounds begin
         d = circuit(cell, exchange, ineq, i)
+        # |d| is the new volume
+        abs(d) ≤ table_limit(T) || return false
     # Read out the inequality associated to the column we want to rotate in
+        r_bound = zero(T)
         for k = 1:n
             rotated_in_ineq[k] = flipsign(cell.circuit_table[ineq.cayley_index, k], d)
+            r_bound = max(r_bound, abs(rotated_in_ineq[k]))
         end
         if exchange == exchange_first
             rotated_in_ineq[i] = rotated_in_ineq[i] ⊖ flipsign(cell.volume, d)
+            r_bound = max(r_bound, abs(rotated_in_ineq[i]))
         end
 
         if exchange == exchange_first
@@ -773,10 +806,11 @@ function exchange_column!(
         end
 
         # bound on |rotated_column|: for exchange_second it is c - volume in configuration i
-        rc_bound = UInt64(table_col_bound[i])
+        rc_bound = U(table_col_bound[i])
         if exchange == exchange_second
-            rc_bound += UInt64(abs(cell.volume))
+            rc_bound += U(abs(cell.volume))
         end
+        table_update_fits(cell, d, r_bound, rc_bound) || return false
         table_update!(cell, d, rc_bound)
 
     #  the violated ineq is now an ineq at the old index
@@ -787,13 +821,12 @@ function exchange_column!(
         end
 
         for k = 1:n
-            table[rotated_out.cayley_index, k] = -flipsign(rotated_in_ineq[k], d)
-            table_col_bound[k] = max(table_col_bound[k], abs(rotated_in_ineq[k]))
-        end
-        if exchange == exchange_first
-            v = table[rotated_out.cayley_index, i] ⊕ d
-            table[rotated_out.cayley_index, i] = v
-            table_col_bound[i] = max(table_col_bound[i], abs(v))
+            v = -flipsign(rotated_in_ineq[k], d)
+            if exchange == exchange_first && k == i
+                v += d
+            end
+            table[rotated_out.cayley_index, k] = v
+            table_col_bound[k] = max(table_col_bound[k], abs(v))
         end
 
         cell.volume = abs(d)
@@ -810,7 +843,7 @@ function exchange_column!(
     # update dot bound since table_col_bound changed
     compute_dot_bound!(cell, τ_bound)
 
-    cell
+    true
 end
 function exchange_column(
     cell::MixedCellTable,
@@ -818,7 +851,10 @@ function exchange_column(
     ineq::CayleyIndex,
     τ_bound,
 )
-    exchange_column!(copy(cell), exchange, ineq, τ_bound)
+    new_cell = copy(cell)
+    exchange_column!(new_cell, exchange, ineq, τ_bound) ||
+        throw(OverflowError("Circuit table entries exceed $(eltype(cell.circuit_table))."))
+    new_cell
 end
 
 function reverse_index(ineq::CayleyIndex, cell::MixedCellTable, exchange::Exchange)
@@ -843,22 +879,62 @@ Base.@propagate_inbounds function circuit(
     end
 end
 
-@inline function table_update!(cell::MixedCellTable, d, rc_bound::UInt64)
+"""
+    table_update_fits(cell::MixedCellTable, d, r_bound, rc_bound)
+
+Checks whether all entries computed by `table_update!` are bounded by [`table_limit`](@ref).
+`r_bound` and `rc_bound` bound the absolute values of `rotated_in_ineq` and `rotated_column`.
+"""
+function table_update_fits(cell::MixedCellTable{T}, d, r_bound, rc_bound) where {T}
+    W = widen(T)
+    U = unsigned(W)
+    rotated_column, rotated_in_ineq = cell.rotated_column, cell.rotated_in_ineq
+    table, table_col_bound = cell.circuit_table, cell.table_col_bound
+    limit = table_limit(T)
+    vol = flipsign(cell.volume, d)
+    # each new entry is (d * table[k, i] + rotated_in_ineq[i] * rotated_column[k]) / vol
+    safe_bound = U(limit) * U(abs(vol))
+    d_bound = U(abs(d))
+    # common case: a bound for all columns at once suffices
+    d_bound * U(cell.max_col_bound) + U(r_bound) * rc_bound ≤ safe_bound && return true
+    m, n = size(table)
+    @inbounds for i in Base.OneTo(n)
+        rᵢ = rotated_in_ineq[i]
+        upper_bound = d_bound * U(table_col_bound[i]) + U(abs(rᵢ)) * rc_bound
+        upper_bound ≤ safe_bound && continue
+        # The bound is too pessimistic, check the actual entries.
+        # The computation in W is exact since upper_bound < typemax(W).
+        vol⁻¹ = MuliplicativeInverse(W(vol))
+        r̂ᵢ = W(rᵢ) * vol⁻¹.p_inv
+        d̂ = W(d) * vol⁻¹.p_inv
+        max_el = zero(W)
+        for k in Base.OneTo(m)
+            v = shift!(d̂ * W(table[k, i]) + r̂ᵢ * W(rotated_column[k]), vol⁻¹)
+            max_el = max(max_el, abs(v))
+        end
+        max_el ≤ limit || return false
+    end
+    true
+end
+
+@inline function table_update!(cell::MixedCellTable{T}, d, rc_bound) where {T}
+    W = widen(T)
+    U = unsigned(W)
     rotated_column, rotated_in_ineq = cell.rotated_column, cell.rotated_in_ineq
     table, table_col_bound = cell.circuit_table, cell.table_col_bound
 
-    d_bound = UInt64(abs(d))
+    d_bound = U(abs(d))
 
     m, n = size(table)
 
     vol⁻¹ = MuliplicativeInverse(flipsign(cell.volume, d))
     @inbounds for i in Base.OneTo(n)
         rᵢ = rotated_in_ineq[i] # we need to manual hoist this out of the loop
-        # computation in UInt64 -> no overflow possible
-        upper_bound = d_bound * table_col_bound[i] + abs(rᵢ) * rc_bound
-        # Can compute everything in Int32 since we divide early
-        if upper_bound < typemax(Int32) * UInt64(vol⁻¹.p)
-            min_el = max_el = zero(Int32)
+        # computation in U -> no overflow possible
+        upper_bound = d_bound * U(table_col_bound[i]) + U(abs(rᵢ)) * rc_bound
+        # Can compute everything in T since we divide early
+        if upper_bound < U(typemax(T)) * U(vol⁻¹.p)
+            min_el = max_el = zero(T)
             r̂ᵢ = rᵢ * vol⁻¹.p_inv
             d̂ = d * vol⁻¹.p_inv
             # avoid shift
@@ -877,29 +953,26 @@ end
             end
             table_col_bound[i] = max(-min_el, max_el)
         else
-            min_el_64 = max_el_64 = zero(Int64)
-            vol⁻¹_64 = MuliplicativeInverse(Int64(flipsign(cell.volume, d)))
-            r̂ᵢ_64 = Int64(rᵢ) * vol⁻¹_64.p_inv
-            d̂_64 = Int64(d) * vol⁻¹_64.p_inv
+            min_el_W = max_el_W = zero(W)
+            vol⁻¹_W = MuliplicativeInverse(W(flipsign(cell.volume, d)))
+            r̂ᵢ_W = W(rᵢ) * vol⁻¹_W.p_inv
+            d̂_W = W(d) * vol⁻¹_W.p_inv
             # avoid shift
             if needs_shift(vol⁻¹)
                 for k in Base.OneTo(m)
-                    v = shift!(
-                        d̂_64 * Int64(table[k, i]) + r̂ᵢ_64 * Int64(rotated_column[k]),
-                        vol⁻¹_64,
-                    )
-                    table[k, i] = Base.unsafe_trunc(Int32, v) # unsafe version to not loose vectorization
-                    min_el_64, max_el_64 = min(min_el_64, v), max(max_el_64, v)
+                    v = shift!(d̂_W * W(table[k, i]) + r̂ᵢ_W * W(rotated_column[k]), vol⁻¹_W)
+                    # truncating to not loose vectorization, table_update_fits checked that v fits
+                    table[k, i] = v % T
+                    min_el_W, max_el_W = min(min_el_W, v), max(max_el_W, v)
                 end
             else
                 for k in Base.OneTo(m)
-                    v = (d̂_64 * Int64(table[k, i]) + r̂ᵢ_64 * Int64(rotated_column[k]))
-                    table[k, i] = Base.unsafe_trunc(Int32, v) # unsafe version to not loose vectorization
-                    min_el_64, max_el_64 = min(min_el_64, v), max(max_el_64, v)
+                    v = (d̂_W * W(table[k, i]) + r̂ᵢ_W * W(rotated_column[k]))
+                    table[k, i] = v % T
+                    min_el_W, max_el_W = min(min_el_W, v), max(max_el_W, v)
                 end
             end
-            # this throws if an overflow happened
-            table_col_bound[i] = Int32(max(-min_el_64, max_el_64))
+            table_col_bound[i] = T(max(-min_el_W, max_el_W))
         end
     end
     table
@@ -989,8 +1062,24 @@ function reverse_exchange_column!(cell::MixedCellTable, v::SearchTreeVertex, τ_
     exchange_column!(cell, v.exchange, v.reverse_index, τ_bound)
 end
 
+"""
+    MixedCellTableTraverser
+
+Traverses the mixed cells reachable from a start cell. The current mixed cell is stored with an
+`Int32` circuit table (`cell32`) or an `Int64` circuit table (`cell64`). The traverser switches
+to `Int64` when an exchange would exceed [`table_limit`](@ref) for `Int32` and back to `Int32`
+once all entries are small again.
+"""
 mutable struct MixedCellTableTraverser{Ord<:TermOrdering} <: AbstractTraverser
-    mixed_cell::MixedCellTable
+    # allocated on first use, see cell32! and cell64!
+    cell32::Union{Nothing,MixedCellTable{Int32,Int64}}
+    cell64::Union{Nothing,MixedCellTable{Int64,Int128}}
+    # true if cell64 holds the current mixed cell
+    use64::Bool
+    # Int32 tables are only used if their dot products with the target always fit Int64
+    allow32::Bool
+    # don't switch back to Int32 before an exchange in Int64 succeeded
+    just_upgraded::Bool
     cayley::Matrix{Int32}
     target::Vector{Int32}
     target_bound::Int32
@@ -1008,7 +1097,76 @@ function MixedCellTableTraverser(
     τ = convert(Vector{Int32}, target)
     τ_bound = abs(maximum(abs, τ))
     A = convert(Matrix{Int32}, cayley)
-    MixedCellTableTraverser(mixed_cell, A, τ, τ_bound, ord, SearchTreeVertex[], false)
+    # see compute_dot_bound!
+    n = nconfigurations(mixed_cell.indexing)
+    allow32 = 2 * Int128(τ_bound) * (n + 1) * table_limit(Int32) < typemax(Int64)
+    use64 = mixed_cell isa MixedCellTable{Int64}
+    traverser = MixedCellTableTraverser{typeof(ord)}(
+        use64 ? nothing : mixed_cell,
+        use64 ? mixed_cell : nothing,
+        use64,
+        allow32,
+        false,
+        A,
+        τ,
+        τ_bound,
+        ord,
+        SearchTreeVertex[],
+        false,
+    )
+    compute_bounds!(mixed_cell, τ_bound)
+    if !use64 && (!allow32 || table_bound(mixed_cell) > table_limit(Int32))
+        upgrade!(traverser)
+        traverser.just_upgraded = false
+    elseif use64 && allow32 && table_bound(mixed_cell) ≤ table_limit(Int32)
+        downgrade!(traverser)
+    end
+    traverser
+end
+
+function cell32!(T::MixedCellTableTraverser)
+    if T.cell32 === nothing
+        C = T.cell64::MixedCellTable{Int64,Int128}
+        T.cell32 = MixedCellTable{Int32}(C.indices, T.cayley, C.indexing; fill_circuit_table = false)
+    end
+    T.cell32::MixedCellTable{Int32,Int64}
+end
+function cell64!(T::MixedCellTableTraverser)
+    if T.cell64 === nothing
+        C = T.cell32::MixedCellTable{Int32,Int64}
+        T.cell64 = MixedCellTable{Int64}(C.indices, T.cayley, C.indexing; fill_circuit_table = false)
+    end
+    T.cell64::MixedCellTable{Int64,Int128}
+end
+
+mixed_cell(T::MixedCellTableTraverser) =
+    T.use64 ? T.cell64::MixedCellTable{Int64,Int128} : T.cell32::MixedCellTable{Int32,Int64}
+
+function copy_cell!(B::MixedCellTable, A::MixedCellTable, τ_bound)
+    B.indices .= A.indices
+    B.volume = A.volume
+    B.circuit_table .= A.circuit_table
+    B.table_col_bound .= A.table_col_bound
+    compute_dot_bound!(B, τ_bound)
+    B
+end
+
+function upgrade!(T::MixedCellTableTraverser)
+    T.use64 && throw(OverflowError("Circuit table entries exceed the supported range of Int64."))
+    copy_cell!(cell64!(T), mixed_cell(T), T.target_bound)
+    T.use64 = T.just_upgraded = true
+    T
+end
+
+function downgrade!(T::MixedCellTableTraverser)
+    copy_cell!(cell32!(T), mixed_cell(T), T.target_bound)
+    T.use64 = false
+    T
+end
+
+# Switch back to Int32 only with some headroom to avoid switching back and forth
+function can_downgrade(T::MixedCellTableTraverser)
+    T.allow32 && !T.just_upgraded && table_bound(mixed_cell(T)) ≤ table_limit(Int32) >> 3
 end
 
 function add_vertex!(search_tree, cell, ineq)
@@ -1026,8 +1184,33 @@ function add_vertex!(search_tree, cell, ineq)
     true
 end
 
+@enum TraversalStep begin
+    step_cell
+    step_complete
+    step_upgrade
+    step_downgrade
+end
+
 function next_cell!(traverser::MixedCellTableTraverser)
-    cell, search_tree = traverser.mixed_cell, traverser.search_tree
+    while true
+        step = if traverser.use64
+            next_cell!(traverser, traverser.cell64::MixedCellTable{Int64,Int128})
+        else
+            next_cell!(traverser, traverser.cell32::MixedCellTable{Int32,Int64})
+        end
+        if step == step_upgrade
+            upgrade!(traverser)
+        elseif step == step_downgrade
+            downgrade!(traverser)
+        else
+            return step == step_complete
+        end
+    end
+end
+
+# Returns step_upgrade or step_downgrade before an exchange to continue with the other cell.
+function next_cell!(traverser::MixedCellTableTraverser, cell::MixedCellTable{T}) where {T}
+    search_tree = traverser.search_tree
     τ, τ_bound, ord = traverser.target, traverser.target_bound, traverser.ord
 
     if !traverser.started
@@ -1035,16 +1218,19 @@ function next_cell!(traverser::MixedCellTableTraverser)
         ineq = first_violated_inequality(cell, τ, ord, τ_bound)
         # Handle case that we have nothing to do
         if ineq === nothing
-            return false
+            return step_cell
         else
             add_vertex!(search_tree, cell, ineq)
         end
     end
 
     while !isempty(search_tree)
+        T == Int64 && can_downgrade(traverser) && return step_downgrade
         v = search_tree[end]
         if v.back
-            reverse_exchange_column!(cell, pop!(search_tree), τ_bound)
+            reverse_exchange_column!(cell, v, τ_bound) || return step_upgrade
+            traverser.just_upgraded = false
+            pop!(search_tree)
 
             if v.update == update_first_and_second && v.exchange == exchange_first
                 push!(
@@ -1055,12 +1241,13 @@ function next_cell!(traverser::MixedCellTableTraverser)
                 search_tree[end] = back(search_tree[end])
             end
         else
-            exchange_column!(cell, v, τ_bound)
+            exchange_column!(cell, v, τ_bound) || return step_upgrade
+            traverser.just_upgraded = false
 
             ineq = first_violated_inequality(cell, τ, ord, τ_bound)
             if ineq === nothing
                 search_tree[end] = back(search_tree[end])
-                return false
+                return step_cell
             else
                 vertex_added = add_vertex!(search_tree, cell, ineq)
                 if !vertex_added
@@ -1070,10 +1257,8 @@ function next_cell!(traverser::MixedCellTableTraverser)
         end
     end
     traverser.started = false
-    true
+    step_complete
 end
-
-mixed_cell(T::MixedCellTableTraverser) = T.mixed_cell
 
 #########################
 # Total Degree Homotopy #
@@ -1108,7 +1293,7 @@ function TotalDegreeTraverser(As::Vector{Matrix{Int32}})
     # things seem to work.
     cell_indices = [(i, i + 1) for i = 1:n]
     indexing = CayleyIndexing(size.(As, 2) .+ (n + 1))
-    mixed_cell = MixedCellTable(cell_indices, A, indexing)
+    mixed_cell = MixedCellTable{Int64}(cell_indices, A, indexing)
     compute_bounds!(mixed_cell, 1)
     traverser = MixedCellTableTraverser(mixed_cell, A, τ, LexicographicOrdering())
     TotalDegreeTraverser(traverser)
@@ -1121,7 +1306,7 @@ function next_cell!(T::TotalDegreeTraverser)
     while !complete
         # ignore all cells where one of the artifical columns is part
         valid_cell = true
-        for (aᵢ, bᵢ) in cell.indices
+        for (aᵢ, bᵢ) in mixed_cell(T.traverser).indices
             if (aᵢ ≤ n + 1 || bᵢ ≤ n + 1)
                 valid_cell = false
                 break
@@ -1189,7 +1374,7 @@ function RegenerationTraverser(As)
         # this is only a valid mixed cell of the first mixed cell
         cell_indices = [(i, i + 1) for i = 1:n]
         indexing = CayleyIndexing(size.(systems, 2))
-        mixed_cell = MixedCellTable(
+        mixed_cell = MixedCellTable{k == 1 ? Int64 : Int32}(
             cell_indices,
             A,
             indexing;
@@ -1242,20 +1427,55 @@ function regeneration_stage_carry_over!(
     T_A::MixedCellTableTraverser,
     stage::Integer,
 )
+    A = mixed_cell(T_A)
+    τ_bound = T_B.target_bound
+    if T_B.allow32 && regeneration_stage_carry_over!(cell32!(T_B), A, T_B.cayley, stage, τ_bound)
+        T_B.use64 = false
+    elseif regeneration_stage_carry_over!(cell64!(T_B), A, T_B.cayley, stage, τ_bound)
+        T_B.use64 = true
+    else
+        throw(OverflowError("Circuit table entries exceed the supported range of Int64."))
+    end
+    T_B.just_upgraded = false
+    nothing
+end
 
-    A = T_A.mixed_cell
-    B = T_B.mixed_cell
+# Returns false if the entries of B would exceed table_limit.
+function regeneration_stage_carry_over!(
+    B::MixedCellTable{S},
+    A::MixedCellTable,
+    cayley::Matrix,
+    stage::Integer,
+    τ_bound,
+) where {S}
+    W = widen(S)
+    limit = table_limit(S)
     # A is a mixed cell at stage i
     # B will be the mixed cell at stage i + 1
     # A has a linear polynomial (L), i.e., n + 1 columns in the current configuration
     # B has the scaled simplex (d * L) + config matrix
     n = nconfigurations(A.indexing)
 
-    @inbounds d = T_B.cayley[1, offset(B.indexing, stage + 1)+2]
+    @inbounds d = W(cayley[1, offset(B.indexing, stage + 1)+2])
 
+    # Make sure that all intermediate results below fit W.
+    # The new circuits are sums of n + 1 products of entries of the cayley matrix
+    # with entries of A scaled by d.
+    κ = 0
+    @inbounds for j in configuration(B.indexing, stage + 1)
+        κⱼ = 0
+        for i = 1:n
+            κⱼ += abs(Int(cayley[i, j]))
+        end
+        κ = max(κ, κⱼ)
+    end
+    Float64(table_bound(A)) * d * (d + 2κ) < 0.5 * typemax(W) || return false
+
+    vol = W(A.volume) * d
+    abs(vol) ≤ limit || return false
     B.indices .= A.indices
     shift_indices!(B.indices, n + 1, stage)
-    B.volume = A.volume ⊙ d
+    B.volume = vol
 
     # The circuit tables are nearly identical, A just has for each configuration n+1 rows too much.
     @inbounds for config = 1:n
@@ -1264,72 +1484,52 @@ function regeneration_stage_carry_over!(
         config_cols = ncolumns(B.indexing, config)
 
         if config == stage + 1
-            # We need to compute the circuits for the new config matrix part
-            # We can compute them as a weighted sum of old circuits
-
-            # We can carry over the scaled circuits for the first part
             for k = 1:n
-                if k == config
-                    # we have to multiply by d since we scale the volume
-                    for j = 1:n+1
-                        B.circuit_table[B_off+j, k] = A.circuit_table[A_off+j, k]
-                    end
-                else
-                    # we have to multiply by d since we scale the volume
-                    for j = 1:n+1
-                        B.circuit_table[B_off+j, k] = A.circuit_table[A_off+j, k] ⊙ d
-                    end
-                end
-            end
-
-            # Now we need to compute the new circuits
-            # We can compute them by using hte fact that the first n+1 columns
-            # are an affine basis of R^n.
-            aᵢ, bᵢ = B.indices[stage]
-            for j = n+2:config_cols
-                for k = 1:n
-                    c_0k = Int64(B.circuit_table[B_off+1, k])
-                    # rest will we computed in Int64
+                # We can carry over the circuits for the first part, scaled by d
+                # since we scale the volume (except for this configuration)
+                s = k == config ? one(W) : d
+                c_0k = W(A.circuit_table[A_off+1, k]) * s
+                # We need to compute the circuits for the new config matrix part.
+                # We can compute them by using the fact that the first n+1 columns
+                # are an affine basis of R^n.
+                for j = n+2:config_cols
                     b_jk = d * c_0k
                     for i = 1:n
-                        b_jk += T_B.cayley[i, B_off+j] *
-                                (B.circuit_table[B_off + i + 1, k] - c_0k)
+                        b_jk += cayley[i, B_off+j] * (W(A.circuit_table[A_off+i+1, k]) * s - c_0k)
                     end
-                    B.circuit_table[B_off+j, k] = b_jk # converts back to Int32
+                    abs(b_jk) ≤ limit || return false
+                    B.circuit_table[B_off+j, k] = b_jk % S
                 end
-            end
-
-            for k = 1:n
+                # we have to multiply by d since we change the system from L to (d * L)
                 for j = 1:n+1
-                    # we have to multiply by d sine we change the system from L to (d * L)
-                    B.circuit_table[B_off+j, k] = B.circuit_table[B_off+j, k] ⊙ d
+                    v = W(A.circuit_table[A_off+j, k]) * s * d
+                    abs(v) ≤ limit || return false
+                    B.circuit_table[B_off+j, k] = v % S
                 end
             end
-
         else
             # We can simply carry over things
             if config == stage
                 A_off += n + 1
             end
             for k = 1:n
-                if k == stage + 1
+                s = k == stage + 1 ? one(W) : d
+                if W(A.table_col_bound[k]) * s ≤ limit
                     for j = 1:config_cols
-                        B.circuit_table[B_off+j, k] = A.circuit_table[A_off+j, k]
+                        B.circuit_table[B_off+j, k] = (W(A.circuit_table[A_off+j, k]) * s) % S
                     end
-                elseif A.table_col_bound[k] * Int64(d) < typemax(Int32) # no overflow
+                else
                     for j = 1:config_cols
-                        B.circuit_table[B_off+j, k] = A.circuit_table[A_off+j, k] * d
-                    end
-                else # possible overflow
-                    for j = 1:config_cols
-                        B.circuit_table[B_off+j, k] = A.circuit_table[A_off+j, k] ⊙ d
+                        v = W(A.circuit_table[A_off+j, k]) * s
+                        abs(v) ≤ limit || return false
+                        B.circuit_table[B_off+j, k] = v % S
                     end
                 end
             end
         end
     end
-    compute_bounds!(B, T_B.target_bound)
-    nothing
+    compute_bounds!(B, τ_bound)
+    true
 end
 
 function compute_table_col_bound!(M::MixedCellTable)
@@ -1348,10 +1548,13 @@ end
 
 function compute_dot_bound!(M::MixedCellTable, target_bound)
     n = Int128(nconfigurations(M.indexing))
+    M.max_col_bound = maximum(M.table_col_bound)
     # |dot| ≤ |τ|·vol + Σᵢ |cᵢ|·|τ_aᵢ - τ_bᵢ| + vol·|τ_bᵢ| ≤ 2|τ|·(vol + n·max|c|)
-    M.dot_bound = 2 * Int128(target_bound) * (abs(M.volume) + n * maximum(M.table_col_bound))
+    M.dot_bound = 2 * Int128(target_bound) * (abs(M.volume) + n * M.max_col_bound)
     M
 end
+
+table_bound(M::MixedCellTable) = max(abs(Int128(M.volume)), Int128(M.max_col_bound))
 
 function compute_bounds!(M::MixedCellTable, target_bound)
     compute_table_col_bound!(M)
@@ -1448,7 +1651,7 @@ function mixed_volume(args...; show_progress = true, kwargs...)
         show_progress && ProgressMeter.finish!(p)
         mv
     catch e
-        if isa(e, InexactError)
+        if e isa InexactError || e isa OverflowError
             throw(OverflowError("Mixed volume cannot since an integer overflow occured."))
         else
             rethrow(e)
@@ -1623,12 +1826,7 @@ Base.eltype(::Type{<:MixedCellIterator}) = MixedCell
         end
 
         # Move to the target traverser
-        carry_over!(
-            mixed_cell(iter.target_traverser),
-            mixed_cell(iter.start_traverser),
-            iter.start_traverser,
-            iter.target_traverser.target_bound,
-        )
+        carry_over!(iter.target_traverser, iter.start_traverser)
         using_start_traverser = false
         complete = next_cell!(iter.target_traverser)
     end
@@ -1636,12 +1834,24 @@ Base.eltype(::Type{<:MixedCellIterator}) = MixedCell
 end
 
 """
-    carry_over!(target_cell::MixedCellTable, start_cell::MixedCellTable, T::AbstractTraverser)
+    carry_over!(target::MixedCellTableTraverser, start::AbstractTraverser)
 
-We carry over the state (including circuit table) of a start cell
+We carry over the state (including circuit table) of the current cell of `start`
 to the cell corresponding to the final homotopy.
-This assumes that the
 """
+function carry_over!(target::MixedCellTableTraverser, start::AbstractTraverser)
+    A = mixed_cell(start)
+    # The carried over entries are a subset of the entries of A
+    if target.allow32 && table_bound(A) ≤ table_limit(Int32)
+        carry_over!(cell32!(target), A, start, target.target_bound)
+        target.use64 = false
+    else
+        carry_over!(cell64!(target), A, start, target.target_bound)
+        target.use64 = true
+    end
+    target.just_upgraded = false
+    target
+end
 function carry_over!(B::MixedCellTable, A::MixedCellTable, ::TotalDegreeTraverser, τ_bound)
     n = nconfigurations(B.indexing)
 
@@ -1757,7 +1967,7 @@ function mixed_cells(support::Vector{<:Matrix}, lifting::Vector{<:Vector})
     try
         return [copy(c) for c in MixedCellIterator(support, lifting)]
     catch e
-        if isa(e, InexactError)
+        if e isa InexactError || e isa OverflowError
             throw(OverflowError("Mixed cells cannot be computed for this lift since an integer overflow occured."))
         else
             rethrow(e)
@@ -1847,7 +2057,7 @@ function fine_mixed_cells(
         end
         return nothing
     catch e
-        if isa(e, InexactError) || isa(e, LinearAlgebra.SingularException)
+        if e isa InexactError || e isa OverflowError || e isa LinearAlgebra.SingularException
             return nothing
         else
             rethrow(e)

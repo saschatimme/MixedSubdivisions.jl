@@ -248,5 +248,31 @@ using Test
         @test mixed_volume(A, algorithm = :total_degree) == 1119513
     end
 
+    @testset "Int64 circuit tables" begin
+        # These need circuit tables beyond Int32, which used to throw an OverflowError.
+        # Expected values verified by brute-force enumeration of all cells.
+        A = [
+            [28 34 27 80 59 98; 41 28 45 103 66 14; 22 36 117 108 58 11; 40 98 81 99 52 43],
+            [75 65 93 91 46 46; 37 1 78 119 88 7; 115 65 68 17 41 67; 70 62 74 118 9 50],
+            [106 35 2 39 33 79; 31 89 26 15 59 107; 27 79 76 6 30 16; 38 82 47 38 108 39],
+            [84 87 8 33 90 47; 3 11 55 61 26 31; 3 44 104 81 39 17; 41 45 74 111 18 113],
+        ]
+        @test mixed_volume(A, algorithm = :regeneration) == 404441984
+        @test mixed_volume(A, algorithm = :total_degree) == 404441984
+
+        # lifting too large for Int32 dot products
+        A = [
+            [388 91 22 62 332; 273 258 70 105 263; 73 319 87 109 358],
+            [98 277 214 204 394; 144 279 124 146 8; 98 318 106 20 15],
+            [111 106 283 184 247; 308 76 11 253 381; 241 184 249 282 243],
+        ]
+        lift = [
+            [-191983741, -83874253, -174357837, 178798983, -316331603],
+            [417735239, -536306775, -505198336, 355914830, 333007717],
+            [-424101032, 158185279, -335004225, -238058356, -183751679],
+        ]
+        @test sum(volume, mixed_cells(A, lift)) == 62259741
+    end
+
 
 end
